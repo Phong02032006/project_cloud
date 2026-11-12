@@ -45,9 +45,12 @@ def register_security(app):
     def check_csrf():
         # The grader callback is server-to-server and authenticated by the shared secret instead.
         if request.method == "POST" and request.endpoint != "grader_callback":
+            # In dev mode, allow switching between accounts seamlessly without stale CSRF token clashes
+            if request.endpoint == "auth.login" and app.config.get("AUTH_MODE") == "dev":
+                return
             sent = request.form.get("csrf", "")
             if not sent or not secrets.compare_digest(sent, session.get("csrf", "")):
-                abort(400, "Invalid CSRF token")
+                abort(400, "Invalid or expired session. Please refresh and try again.")
 
     app.jinja_env.globals.update(csrf_token=csrf_token, letters=LETTERS)
     app.jinja_env.filters["num"] = lambda x: "" if x is None else f"{x:g}"
@@ -393,6 +396,11 @@ def register_routes(app):
         if g.user.id not in (sub.student_id, sub.exam.teacher_id):
             abort(403)
         return send_file(grader_client.local_certificate_path(key), mimetype="application/pdf")
+
+    @app.errorhandler(400)
+    def bad_request(e):
+        msg = getattr(e, "description", "Bad Request")
+        return render_template("error.html", code=400, message=msg), 400
 
     @app.errorhandler(403)
     def forbidden(_):

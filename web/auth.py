@@ -37,7 +37,10 @@ def _sign_in(external_id, name, email, role):
         # Entra is the source of truth: role changes there take effect on next login.
         user.name, user.email, user.role = name, email, role
     db.session.commit()
+    csrf = session.get("csrf")
     session.clear()
+    if csrf:
+        session["csrf"] = csrf
     session["user_id"] = user.id
     return user
 
@@ -106,7 +109,10 @@ def callback():
 
 @bp.route("/logout", methods=["POST"])
 def logout():
+    csrf = session.get("csrf")
     session.clear()
+    if csrf:
+        session["csrf"] = csrf
     if current_app.config["AUTH_MODE"] == "entra":
         authority = current_app.config["ENTRA_AUTHORITY"].rstrip("/")
         return redirect(
