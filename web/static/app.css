@@ -249,6 +249,46 @@ h3 { font-size: 1.45rem; }
   color: var(--apple-ink-muted);
 }
 
+/* ---------- Page Header & Actions ---------- */
+.qc-page-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1.25rem;
+  margin-bottom: 2.2rem;
+  padding-bottom: 0.5rem;
+}
+
+.qc-page-head h2 { margin: 0; font-size: 2rem; }
+
+.qc-breadcrumb {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.88rem;
+  font-weight: 500;
+  color: var(--apple-blue);
+  text-decoration: none;
+  margin-bottom: 0.75rem;
+}
+.qc-breadcrumb:hover { text-decoration: underline; }
+
+/* ---------- Feature Cards & Icons ---------- */
+.qc-feature .icon, .icon.tone-indigo, .icon.tone-green, .icon.tone-amber, .icon.tone-pink, .icon.tone-cyan {
+  width: 44px !important;
+  height: 44px !important;
+  border-radius: 12px !important;
+  display: inline-grid !important;
+  place-items: center !important;
+  font-size: 1.25rem !important;
+  flex-shrink: 0;
+}
+
+.qc-feature .icon {
+  margin-bottom: 1.15rem;
+}
+
 /* ---------- Stats Grid ---------- */
 .qc-stat {
   padding: 1.25rem 1.4rem;
@@ -283,7 +323,7 @@ h3 { font-size: 1.45rem; }
 }
 
 .tone-indigo { background: var(--apple-pill-tint) !important; color: var(--apple-blue) !important; }
-.tone-green { background: var(--apple-green-tint) !important; color: #1b873f) !important; }
+.tone-green { background: var(--apple-green-tint) !important; color: #1b873f !important; }
 .tone-amber { background: var(--apple-orange-tint) !important; color: #b25e00 !important; }
 .tone-pink { background: #fdf2f8 !important; color: #db2777 !important; }
 .tone-cyan { background: #e0f2fe !important; color: #0284c7 !important; }
@@ -591,6 +631,79 @@ h3 { font-size: 1.45rem; }
   padding: 1.25rem 1.4rem;
   background: #f5f5f7;
   border: 1px solid var(--apple-divider);
+}
+
+/* ---------- Review & Option Inputs ---------- */
+.qc-review-opt {
+  padding: 0.65rem 0.95rem;
+  border-radius: var(--apple-radius-md);
+  margin-bottom: 0.45rem;
+  display: flex;
+  gap: 0.75rem;
+  align-items: center;
+  background: #fbfbfd;
+  border: 1px solid var(--apple-divider);
+}
+
+.qc-review-opt.correct {
+  background: var(--apple-green-tint);
+  border-color: rgba(52, 199, 89, 0.3);
+  color: #1b873f;
+  font-weight: 500;
+}
+
+.qc-review-opt.wrong {
+  background: var(--apple-red-tint);
+  border-color: rgba(255, 59, 48, 0.3);
+  color: #d70015;
+}
+
+.qc-option-input {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 0.65rem;
+}
+
+.qc-option-input .letter {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  font-weight: 600;
+  background: #f5f5f7;
+  color: var(--apple-ink-muted);
+  flex-shrink: 0;
+}
+
+.qc-option-input .form-check-input {
+  width: 1.25rem;
+  height: 1.25rem;
+  margin: 0;
+  flex-shrink: 0;
+  cursor: pointer;
+  border-radius: 6px;
+}
+
+.qc-empty {
+  padding: 3.5rem 1.5rem;
+  text-align: center;
+  color: var(--apple-ink-muted);
+}
+
+.qc-empty i {
+  font-size: 2.8rem;
+  display: block;
+  margin-bottom: 0.75rem;
+  color: var(--apple-hairline);
+}
+
+.dropzone {
+  border: 2px dashed var(--apple-hairline);
+  border-radius: var(--apple-radius-lg);
+  padding: 1.5rem;
+  background: #fbfbfd;
 }
 
 /* ---------- Login & Quick Sign-in ---------- */
