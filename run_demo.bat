@@ -4,8 +4,9 @@ title QuizCloud demo
 cd /d "%~dp0"
 
 set "PY="
-where py >nul 2>nul && set "PY=py -3"
-if not defined PY where python >nul 2>nul && set "PY=python"
+where python >nul 2>nul && set "PY=python"
+if not defined PY where py >nul 2>nul && set "PY=py -3.13"
+if not defined PY where py >nul 2>nul && set "PY=py -3"
 if not defined PY (
   echo [!] Python is not installed. Get it from https://www.python.org/downloads/ ^(tick "Add python.exe to PATH"^) and run this again.
   pause
