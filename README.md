@@ -12,32 +12,36 @@ When a student submits, the web app queues the submission into **Amazon SQS**. A
 
 ```mermaid
 flowchart LR
-  U[Teachers / Students] -->|HTTPS| WEB
-  subgraph Azure
-    ENTRA[Entra External ID<br/>Auth + App Roles]
-    WEB[App Service F1<br/>Flask Web App]
-    SQL[(Azure SQL Database<br/>Free Tier)]
+  U["Teachers &<br/>Students"] -->|HTTPS| WEB
+
+  subgraph Azure["Azure"]
+    ENTRA["Entra ID<br/>Auth & Roles"]
+    WEB["App Service F1<br/>Flask Web App"]
+    SQL[("Azure SQL<br/>Database")]
   end
-  subgraph AWS
-    APIGW[API Gateway<br/>HTTP API]
-    L[Lambda Python 3.12<br/>Grading & PDF Generator]
-    Q[[SQS Queue<br/>Pending Submissions]]
-    DLQ[[SQS Dead-Letter Queue]]
-    S3[(Private S3 Bucket<br/>PDF Certificates)]
-    SES[SES<br/>Result Emails]
-    CW[CloudWatch Logs]
+
+  subgraph AWS["AWS"]
+    APIGW["API Gateway<br/>HTTP API"]
+    L["AWS Lambda<br/>Grader & PDF"]
+    Q[["SQS Queue<br/>Submissions"]]
+    DLQ[["Dead-Letter<br/>Queue (DLQ)"]]
+    S3[("S3 Bucket<br/>Certificates")]
+    SES["SES<br/>Email Service"]
+    CW["CloudWatch<br/>Logs"]
   end
+
   WEB <-->|OIDC| ENTRA
   WEB <--> SQL
-  WEB -->|1. submit + x-grader-secret| APIGW --> L
+  WEB -->|1. Submit| APIGW
+  APIGW --> L
   L -->|2. SendMessage| Q
-  Q -->|3. trigger| L
-  Q -.->|after 3 failures| DLQ
+  Q -->|3. Trigger| L
+  Q -.->|Failed 3x| DLQ
   L -->|4. PutObject| S3
-  L -->|5. callback result| WEB
+  L -->|5. Callback| WEB
   L --> SES
   L --> CW
-  U -.->|download PDF via presigned URL| S3
+  U -.->|Download PDF| S3
 ```
 
 ### Asynchronous Submission Flow
