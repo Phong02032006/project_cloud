@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% block title %}Sign in{% endblock %}
+{% block content %}
+<div class="qc-auth-wrap">
+  <div class="qc-card p-4 p-md-5" style="max-width:460px;width:100%">
+    <div class="text-center mb-4">
+      <span class="qc-logo mx-auto mb-3" style="width:52px;height:52px;font-size:1.5rem"><i class="bi bi-lightning-charge-fill"></i></span>
+      <h3 class="mb-1">Welcome back</h3>
+      <p class="text-secondary small mb-0">Demo mode: pick a sample account to continue</p>
+    </div>
+
+    <div class="d-grid gap-2">
+      {% for name, email, role, icon, tone, sub in [
+        ('Dr. Sarah Mitchell', 'teacher@demo.local', 'teacher', 'bi-person-workspace', 'tone-amber', 'Teacher · create exams, view statistics'),
+        ('Alex Johnson', 'alex@demo.local', 'student', 'bi-mortarboard', 'tone-green', 'Student · take exams, earn certificates'),
+      ] %}
+      <form method="post" class="m-0">
+        <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+        <input type="hidden" name="name" value="{{ name }}"><input type="hidden" name="email" value="{{ email }}"><input type="hidden" name="role" value="{{ role }}">
+        <button class="qc-quick">
+          <span class="icon {{ tone }}"><i class="bi {{ icon }}"></i></span>
+          <span class="flex-grow-1"><span class="fw-bold d-block">{{ name }}</span><span class="small text-secondary">{{ sub }}</span></span>
+          <i class="bi bi-chevron-right text-secondary"></i>
+        </button>
+      </form>
+      {% endfor %}
+    </div>
+
+    <div class="qc-divider">or sign in with another account</div>
+
+    <form method="post">
+      <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+      <div class="mb-3"><label class="form-label">Full name</label><input name="name" class="form-control" placeholder="Jane Doe" required></div>
+      <div class="mb-3"><label class="form-label">Email</label><input name="email" type="email" class="form-control" placeholder="you@school.edu" required></div>
+      <div class="mb-4">
+        <label class="form-label">Role</label>
+        <select name="role" class="form-select">
+          <option value="student">Student</option>
+          <option value="teacher">Teacher</option>
+        </select>
+      </div>
+      <button class="btn btn-primary w-100 btn-lg">Sign in</button>
+    </form>
+    <p class="text-secondary small text-center mt-4 mb-0"><i class="bi bi-info-circle"></i> In production, set <code>AUTH_MODE=entra</code> to sign in with Microsoft Entra External ID.</p>
+  </div>
+</div>
+{% endblock %}

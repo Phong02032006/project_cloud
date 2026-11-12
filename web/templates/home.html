@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+{% block title %}Home{% endblock %}
+{% block content %}
+<section class="qc-hero mb-5">
+  <div class="row align-items-center position-relative" style="z-index:1">
+    <div class="col-lg-7">
+      <span class="badge rounded-pill text-bg-light text-primary mb-3 px-3 py-2"><i class="bi bi-stars"></i> Multi-cloud online quiz platform</span>
+      <h1 class="mb-3">Create exams, take tests, auto-grade &amp; issue certificates</h1>
+      <p class="lead mb-4">Teachers build an exam in minutes. Students take it online, get their score instantly and download a PDF certificate generated automatically on AWS Lambda.</p>
+      <div class="d-flex flex-wrap gap-2">
+        <a href="{{ url_for('auth.login') }}" class="btn btn-light btn-lg"><i class="bi bi-box-arrow-in-right me-1"></i> Get started</a>
+        <a href="#architecture" class="btn btn-outline-light btn-lg">View architecture</a>
+      </div>
+    </div>
+    <div class="col-lg-5 d-none d-lg-block">
+      <div class="qc-card p-4 text-body ms-lg-4">
+        <div class="d-flex align-items-center gap-3 mb-3">
+          <div class="qc-ring" style="--p:88"><div><div><div class="big">8.8</div><div class="small text-secondary">/ 10</div></div></div></div>
+          <div>
+            <div class="qc-chip success mb-2"><i class="bi bi-patch-check-fill"></i> PASSED</div>
+            <div class="fw-bold">Cloud Computing</div>
+            <div class="small text-secondary">Graded automatically in seconds</div>
+          </div>
+        </div>
+        <div class="qc-cert-banner d-flex align-items-center gap-3">
+          <i class="bi bi-file-earmark-pdf-fill fs-2 text-danger"></i>
+          <div class="small"><b>PDF certificate</b><br><span class="text-secondary">Stored on Amazon S3 · presigned link</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<div class="row g-4 mb-5">
+  {% for icon, tone, title, text in [
+    ('bi-shield-lock', 'tone-indigo', 'Strict access control', 'Sign in with Microsoft Entra ID, with separate Teacher and Student roles.'),
+    ('bi-lightning-charge', 'tone-amber', 'Instant grading', 'SQS queue + AWS Lambda grade serverlessly and handle a whole class submitting at once.'),
+    ('bi-file-earmark-richtext', 'tone-pink', 'Dynamic files', 'PDF certificates, printable HTML reports and CSV grade exports.'),
+    ('bi-graph-up-arrow', 'tone-green', 'Clear statistics', 'Average score, pass rate and the correct-answer rate of every question.'),
+  ] %}
+  <div class="col-md-6 col-lg-3">
+    <div class="qc-card qc-card-hover qc-feature p-4 h-100">
+      <div class="icon {{ tone }} mb-3"><i class="bi {{ icon }}"></i></div>
+      <h5>{{ title }}</h5>
+      <p class="text-secondary mb-0 small">{{ text }}</p>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+
+<section id="architecture" class="qc-card p-4 p-lg-5">
+  <div class="qc-section-title mb-2">Multi-cloud architecture</div>
+  <h3 class="mb-4">Azure manages users &amp; data, AWS handles grading &amp; files</h3>
+  <div class="row g-3 align-items-stretch">
+    <div class="col-md-5">
+      <div class="qc-cloud-box h-100">
+        <div class="fw-bold mb-2"><i class="bi bi-microsoft text-primary"></i> Microsoft Azure</div>
+        <div class="d-flex flex-wrap gap-2">
+          <span class="qc-chip info">Entra External ID</span><span class="qc-chip info">App Service</span><span class="qc-chip info">Azure SQL Database</span>
+        </div>
+      </div>
+    </div>
+    <div class="col-md-2 d-flex align-items-center justify-content-center text-secondary fs-3"><i class="bi bi-arrow-left-right"></i></div>
+    <div class="col-md-5">
+      <div class="qc-cloud-box h-100">
+        <div class="fw-bold mb-2"><i class="bi bi-amazon text-warning"></i> Amazon Web Services</div>
+        <div class="d-flex flex-wrap gap-2">
+          <span class="qc-chip warning">API Gateway</span><span class="qc-chip warning">SQS</span><span class="qc-chip warning">Lambda</span><span class="qc-chip warning">S3</span><span class="qc-chip warning">SES</span><span class="qc-chip warning">CloudWatch</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+{% endblock %}
