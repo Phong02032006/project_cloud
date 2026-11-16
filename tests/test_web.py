@@ -406,3 +406,17 @@ def test_delete_exam_removes_versions_and_attempts(app):
     with app.app_context():
         assert (Exam.query.count(), ExamVersion.query.count(), Question.query.count(), Submission.query.count()) \
             == (0, 0, 0, 0)
+
+
+def test_manage_page_warns_about_edit_impact(app):
+    teacher, student, t, exam_id = _setup(app)
+    page = teacher.get(f"/teacher/exams/{exam_id}").get_data(as_text=True)
+    assert 'id="edit-impact"' not in page
+
+    student.get(f"/student/exams/{exam_id}")
+    finisher = app.test_client()
+    login(finisher, "F", "f@x.edu", "student")
+    finisher.post(f"/student/exams/{exam_id}", data={"csrf": csrf(finisher, f"/student/exams/{exam_id}"), "q1": "0"})
+    page = teacher.get(f"/teacher/exams/{exam_id}").get_data(as_text=True)
+    assert "version 3" in page and "1 student is mid-attempt" in page and "1 attempt is finished" in page
+    assert "2 attempts" in page and page.count("js-edit") >= 4

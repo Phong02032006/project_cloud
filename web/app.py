@@ -90,6 +90,16 @@ def _exam_stats(exam):
     }
 
 
+def _edit_impact(exam):
+    """Who an edit would (not) affect: attempts are pinned to the version they started on."""
+    per_version = {}
+    for s in exam.submissions:
+        per_version[s.version_id] = per_version.get(s.version_id, 0) + 1
+    in_progress = sum(1 for s in exam.submissions if s.status == "in_progress")
+    return {"in_progress": in_progress, "finished": len(exam.submissions) - in_progress,
+            "per_version": per_version, "next_version": len(exam.versions) + 1}
+
+
 def _question_stats(exam):
     """Percentage of graded submissions answering each question correctly (for the report)."""
     graded = [s for s in exam.submissions if s.status == "graded" and s.details]
@@ -216,7 +226,8 @@ def register_routes(app):
     @app.route("/teacher/exams/<int:exam_id>")
     @login_required("teacher")
     def exam_manage(exam_id):
-        return render_template("exam_manage.html", exam=_own_exam(exam_id))
+        exam = _own_exam(exam_id)
+        return render_template("exam_manage.html", exam=exam, impact=_edit_impact(exam))
 
     @app.route("/teacher/exams/<int:exam_id>/questions", methods=["POST"])
     @login_required("teacher")
