@@ -12,6 +12,9 @@ def process_submission(payload, store):
     student = payload["student"]
     result = grade(payload["questions"], payload.get("answers", {}))
     passed = result["percent"] >= float(exam.get("pass_percent", 50))
+    if not payload.get("issue_certificate", True):
+        # Withheld for review: grade only, no PDF until the teacher releases it.
+        return {**result, "passed": passed, "certificate_id": None, "certificate_key": None}
 
     cert_id = uuid.uuid4().hex[:10].upper()
     pdf = build_certificate(

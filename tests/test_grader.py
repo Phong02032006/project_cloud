@@ -177,3 +177,24 @@ def test_post_callback_sends_secret(aws, queue, monkeypatch):
     monkeypatch.setattr(handler.urllib.request, "urlopen", fake_urlopen)
     handler._post_callback({"submission_id": 7})
     assert seen == {"url": "https://web.example/api/grader/callback", "secret": "s3cret", "body": {"submission_id": 7}}
+
+
+def test_withheld_grades_without_pdf_and_sends_review_notice(aws):
+    s3, ses = aws
+    resp = handler.lambda_handler(_event({**PAYLOAD, "issue_certificate": False}), None)
+    body = json.loads(resp["body"])
+    assert resp["statusCode"] == 200 and body["score"] == 3
+    assert body["certificate_key"] is None and body["certificate_url"] is None and not s3.objects
+    assert ses.sent[0]["Message"]["Subject"]["Data"] == "Exam result under review: Thi thử"
+
+
+def test_notify_sends_cancel_notice(aws):
+    _, ses = aws
+    resp = handler.lambda_handler(_event({"action": "notify", "kind": "cancelled", "student": PAYLOAD["student"],
+                                          "exam": PAYLOAD["exam"]}), None)
+    assert resp["statusCode"] == 200
+    assert ses.sent[0]["Destination"]["ToAddresses"] == ["b@example.com"]
+    assert "cancelled" in ses.sent[0]["Message"]["Body"]["Text"]["Data"]
+    bad = handler.lambda_handler(_event({"action": "notify", "kind": "nope", "student": PAYLOAD["student"],
+                                         "exam": PAYLOAD["exam"]}), None)
+    assert bad["statusCode"] == 400

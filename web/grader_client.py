@@ -51,8 +51,19 @@ def grade_submission(payload):
             f.write(pdf)
 
     result = process_submission(payload, store)
-    result["certificate_url"] = certificate_url(result["certificate_key"])
+    result["certificate_url"] = certificate_url(result["certificate_key"]) if result["certificate_key"] else None
+    if not result["certificate_key"]:
+        current_app.logger.info("local mode: would email 'withheld' notice to %s", payload["student"].get("email"))
     return result
+
+
+def notify(payload):
+    """Email the student about a withheld/cancelled result (AWS SES via the Lambda; logged in local mode)."""
+    if is_local():
+        current_app.logger.info("local mode: would email '%s' notice to %s", payload["kind"],
+                                payload["student"].get("email"))
+        return
+    _call_remote({**payload, "action": "notify"})
 
 
 def certificate_url(key):

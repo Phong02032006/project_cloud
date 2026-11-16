@@ -1,7 +1,8 @@
 """AWS Lambda entry point (handler: handler.lambda_handler).
 
 One function, two triggers:
-- API Gateway (HTTP): action "submit" queues a submission on SQS; "grade" grades synchronously; "presign" refreshes a link.
+- API Gateway (HTTP): action "submit" queues a submission on SQS; "grade" grades synchronously; "presign" refreshes a link;
+  "notify" emails the student about a withheld/cancelled result.
 - SQS: grades queued submissions, stores the PDF on S3, reports the result to the web app and emails the student.
 """
 import base64
@@ -44,25 +45,55 @@ def _store(key, pdf):
     _client("s3").put_object(Bucket=os.environ["CERT_BUCKET"], Key=key, Body=pdf, ContentType="application/pdf")
 
 
-def _send_email(to, student_name, exam_title, result, url):
+NOTICES = {
+    "withheld": ("Exam result under review: {title}",
+                 "Hi {name},\n\nYour submission for \"{title}\" was flagged during the managed exam and is being "
+                 "reviewed by your teacher. Your result and certificate will be available once the review is done.\n"),
+    "cancelled": ("Exam certificate cancelled: {title}",
+                  "Hi {name},\n\nAfter review, your teacher cancelled the result and certificate for \"{title}\". "
+                  "Please contact your teacher if you have questions.\n"),
+}
+
+
+def _send(to, subject, text):
     sender = os.environ.get("SES_SENDER")
     if not sender or not to:
         return
+    try:
+        _client("ses").send_email(
+            Source=sender,
+            Destination={"ToAddresses": [to]},
+            Message={"Subject": {"Data": subject, "Charset": "UTF-8"},
+                     "Body": {"Text": {"Data": text, "Charset": "UTF-8"}}},
+        )
+    except Exception:  # email is best-effort; grading result must still be delivered
+        log.exception("SES send_email failed")
+
+
+def _send_email(to, student_name, exam_title, result, url):
     status = "PASSED" if result["passed"] else "NOT PASSED"
     text = (
         f"Hi {student_name},\n\nYour result for \"{exam_title}\": "
         f"{result['score']:g}/{result['max_score']:g} ({result['percent']:g}%) - {status}.\n"
         f"Download your PDF (link expires in 1 hour): {url}\n"
     )
-    try:
-        _client("ses").send_email(
-            Source=sender,
-            Destination={"ToAddresses": [to]},
-            Message={"Subject": {"Data": f"Exam result: {exam_title}", "Charset": "UTF-8"},
-                     "Body": {"Text": {"Data": text, "Charset": "UTF-8"}}},
-        )
-    except Exception:  # email is best-effort; grading result must still be delivered
-        log.exception("SES send_email failed")
+    _send(to, f"Exam result: {exam_title}", text)
+
+
+def _send_notice(kind, student, exam_title):
+    subject, text = NOTICES[kind]
+    fields = {"name": student["name"], "title": exam_title}
+    _send(student.get("email"), subject.format(**fields), text.format(**fields))
+
+
+def _deliver(payload, result, url=None):
+    """Email the result, or the 'under review' notice when the certificate was withheld."""
+    student = payload["student"]
+    if result["certificate_key"]:
+        _send_email(student.get("email"), student["name"], payload["exam"]["title"], result,
+                    url or _presign(result["certificate_key"]))
+    else:
+        _send_notice("withheld", student, payload["exam"]["title"])
 
 
 def _post_callback(body):
@@ -91,9 +122,7 @@ def _handle_sqs(event):
         payload = json.loads(record["body"])
         result = process_submission(payload, _store)
         _post_callback({"submission_id": payload["submission_id"], **result})
-        student = payload["student"]
-        _send_email(student.get("email"), student["name"], payload["exam"]["title"], result,
-                    _presign(result["certificate_key"]))
+        _deliver(payload, result)
         log.info("graded queued submission %s: %s/%s", payload["submission_id"], result["score"],
                  result["max_score"])
     return {"processed": len(event["Records"])}
@@ -123,6 +152,12 @@ def lambda_handler(event, context):
             return _response(400, {"error": "invalid key"})
         return _response(200, {"certificate_url": _presign(key)})
 
+    if action == "notify":
+        if payload.get("kind") not in NOTICES or "student" not in payload or "exam" not in payload:
+            return _response(400, {"error": "bad notify payload"})
+        _send_notice(payload["kind"], payload["student"], payload["exam"]["title"])
+        return _response(200, {"status": "sent"})
+
     if action == "submit":
         try:
             _validate(payload)
@@ -140,8 +175,7 @@ def lambda_handler(event, context):
     except (KeyError, TypeError, ValueError) as exc:
         return _response(400, {"error": f"bad payload: {exc}"})
 
-    result["certificate_url"] = _presign(result["certificate_key"])
-    student = payload["student"]
-    _send_email(student.get("email"), student["name"], payload["exam"]["title"], result, result["certificate_url"])
+    result["certificate_url"] = _presign(result["certificate_key"]) if result["certificate_key"] else None
+    _deliver(payload, result, result["certificate_url"])
     log.info("graded submission %s: %s/%s", payload.get("submission_id"), result["score"], result["max_score"])
     return _response(200, result)
