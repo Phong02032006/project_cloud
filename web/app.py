@@ -7,6 +7,7 @@ from datetime import timedelta
 import click
 from flask import (Flask, Response, abort, flash, g, jsonify, redirect, render_template, request, send_file,
                    session, url_for)
+from sqlalchemy import update
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 import grader_client
@@ -102,6 +103,7 @@ def _question_stats(exam):
 RESULT_FIELDS = ("score", "max_score", "percent", "passed", "details", "certificate_key", "certificate_id")
 # A queued submission with no callback after this long can be re-sent by the student/teacher.
 STUCK_AFTER = timedelta(minutes=2)
+SUBMIT_GRACE = timedelta(seconds=30)
 
 
 def _apply_result(sub, result):
@@ -113,6 +115,28 @@ def _apply_result(sub, result):
 
 def _is_stuck(sub):
     return sub.status == "pending" and utcnow() - sub.submitted_at > STUCK_AFTER
+
+
+# this try to claim the submission; only in_progress one can be claimed
+def _claim(sub, **values):
+    claimed = db.session.execute(
+        update(Submission)
+        .where(Submission.id == sub.id, Submission.status == "in_progress")
+        .values(status="pending", submitted_at=utcnow(), **values)
+    ).rowcount == 1
+    db.session.commit()
+    db.session.refresh(sub)
+    return claimed
+
+
+def _finish_if_expired(app, sub):
+    if sub.status == "in_progress" and utcnow() > sub.deadline + SUBMIT_GRACE and _claim(sub):
+        _grade_and_save(app, sub)
+
+
+def _finish_expired(app, subs):
+    for sub in subs:
+        _finish_if_expired(app, sub)
 
 
 def _grade_and_save(app, sub):
@@ -281,6 +305,7 @@ def register_routes(app):
     @login_required("teacher")
     def exam_results(exam_id):
         exam = _own_exam(exam_id)
+        _finish_expired(app, exam.submissions)
         subs = sorted(exam.submissions, key=lambda s: s.submitted_at, reverse=True)
         return render_template("exam_results.html", exam=exam, submissions=subs, stats=_exam_stats(exam))
 
@@ -288,10 +313,13 @@ def register_routes(app):
     @login_required("teacher")
     def exam_results_csv(exam_id):
         exam = _own_exam(exam_id)
+        _finish_expired(app, exam.submissions)
         buf = io.StringIO()
         w = csv.writer(buf)
         w.writerow(["Full name", "Email", "Score", "Max score", "Percent", "Result", "Submitted at (UTC)", "Certificate ID"])
         for s in sorted(exam.submissions, key=lambda s: s.submitted_at):
+            if s.status == "in_progress":
+                continue
             w.writerow([s.student.name, s.student.email, s.score, s.max_score, s.percent,
                         "Passed" if s.passed else "Failed", s.submitted_at.strftime("%Y-%m-%d %H:%M"),
                         s.certificate_id or ""])
@@ -303,6 +331,7 @@ def register_routes(app):
     @login_required("teacher")
     def exam_report(exam_id):
         exam = _own_exam(exam_id)
+        _finish_expired(app, exam.submissions)
         return render_template("exam_report.html", exam=exam, stats=_exam_stats(exam),
                                qstats=_question_stats(exam),
                                submissions=sorted(exam.submissions, key=lambda s: -(s.percent or 0)))
@@ -313,6 +342,7 @@ def register_routes(app):
     def student_dashboard():
         exams = Exam.query.filter_by(published=True).order_by(Exam.created_at.desc()).all()
         mine = {s.exam_id: s for s in Submission.query.filter_by(student_id=g.user.id)}
+        _finish_expired(app, mine.values())
         return render_template("student_dashboard.html", exams=exams, mine=mine)
 
     @app.route("/student/exams/<int:exam_id>", methods=["GET", "POST"])
@@ -321,18 +351,23 @@ def register_routes(app):
         exam = db.get_or_404(Exam, exam_id)
         if not exam.published:
             abort(404)
-        existing = Submission.query.filter_by(exam_id=exam.id, student_id=g.user.id).first()
-        if existing:
-            return redirect(url_for("submission_view", sub_id=existing.id))
+        # get current attempt, if null -> start a new timed attempt
+        sub = Submission.query.filter_by(exam_id=exam.id, student_id=g.user.id).first()
+        if sub is None:
+            sub = Submission(exam_id=exam.id, student_id=g.user.id, answers={}, status="in_progress")
+            db.session.add(sub)
+            db.session.commit()
+        _finish_if_expired(app, sub) # if the attempt is ongoing but expired, submit right away
+        if sub.status != "in_progress":
+            return redirect(url_for("submission_view", sub_id=sub.id))
         if request.method == "GET":
-            return render_template("take_exam.html", exam=exam)
+            # render the server side time on the web
+            remaining = max(0, int((sub.deadline - utcnow()).total_seconds()))
+            return render_template("take_exam.html", exam=exam, remaining=remaining)
 
         answers = {str(q.id): [int(v) for v in request.form.getlist(f"q{q.id}") if v.isdigit()]
                    for q in exam.questions}
-        sub = Submission(exam_id=exam.id, student_id=g.user.id, answers=answers)
-        db.session.add(sub)
-        db.session.commit()
-        if not _grade_and_save(app, sub):
+        if _claim(sub, answers=answers) and not _grade_and_save(app, sub):
             flash("Your answers were saved but grading failed. Click 'Regrade' or contact your teacher.", "danger")
         return redirect(url_for("submission_view", sub_id=sub.id))
 
@@ -342,6 +377,9 @@ def register_routes(app):
         sub = db.get_or_404(Submission, sub_id)
         if g.user.id not in (sub.student_id, sub.exam.teacher_id):
             abort(403)
+        _finish_if_expired(app, sub)
+        if sub.status == "in_progress" and g.user.id == sub.student_id:
+            return redirect(url_for("take_exam", exam_id=sub.exam_id))
         cert_url = None
         if sub.certificate_key:
             try:

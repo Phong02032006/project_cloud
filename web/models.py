@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from flask_sqlalchemy import SQLAlchemy
 
@@ -71,7 +71,12 @@ class Submission(db.Model):
     passed = db.Column(db.Boolean)
     certificate_key = db.Column(db.String(500))
     certificate_id = db.Column(db.String(20))
-    status = db.Column(db.String(20), default="pending")  # pending | graded | error
+    status = db.Column(db.String(20), default="pending")  # in_progress | pending | graded | error
+    started_at = db.Column(db.DateTime, default=utcnow, nullable=False)
     submitted_at = db.Column(db.DateTime, default=utcnow)
 
     student = db.relationship("User")
+
+    @property
+    def deadline(self):
+        return self.started_at + timedelta(minutes=self.exam.duration_minutes)

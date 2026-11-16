@@ -59,8 +59,8 @@
   };
   document.getElementById("exam-form").addEventListener("change", updateProgress);
 
-  // Client-side countdown; auto-submits when time runs out.
-  let remaining = {{ exam.duration_minutes * 60 }};
+  // Countdown from the server-side deadline; auto-submits when time runs out.
+  let remaining = {{ remaining }};
   const el = document.getElementById("timer"), box = document.getElementById("timer-box");
   const tick = () => {
     const m = String(Math.floor(remaining / 60)).padStart(2, "0"), s = String(remaining % 60).padStart(2, "0");

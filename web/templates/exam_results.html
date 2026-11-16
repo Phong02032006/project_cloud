@@ -41,7 +41,7 @@
           <td><div class="d-flex align-items-center gap-2"><div class="qc-progress flex-grow-1"><span style="width: {{ s.percent }}%"></span></div><span class="small fw-semibold">{{ s.percent|num }}%</span></div></td>
           <td>{% if s.passed %}<span class="qc-chip success"><i class="bi bi-check-circle-fill"></i> Passed</span>{% else %}<span class="qc-chip danger"><i class="bi bi-x-circle-fill"></i> Failed</span>{% endif %}</td>
         {% else %}
-          <td colspan="3"><span class="qc-chip warning"><i class="bi bi-exclamation-triangle"></i> {{ 'Grading error' if s.status == 'error' else 'Grading...' }}</span></td>
+          <td colspan="3"><span class="qc-chip warning"><i class="bi bi-exclamation-triangle"></i> {{ 'Grading error' if s.status == 'error' else 'In progress' if s.status == 'in_progress' else 'Grading...' }}</span></td>
         {% endif %}
         <td class="small text-secondary">{{ s.submitted_at.strftime('%b %d, %Y %H:%M') }}</td>
         <td class="text-end"><a href="{{ url_for('submission_view', sub_id=s.id) }}" class="btn btn-sm btn-ghost">Details <i class="bi bi-chevron-right"></i></a></td>
