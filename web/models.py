@@ -57,6 +57,7 @@ class Exam(db.Model):
                                cascade="all, delete-orphan", order_by="ExamVersion.id")
     # every question row this exam ever owned; only here so deleting the exam cleans them up
     question_rows = db.relationship("Question", backref="exam", cascade="all, delete-orphan")
+    certificates = db.relationship("Certificate", backref="exam", cascade="all, delete-orphan")
     submissions = db.relationship("Submission", backref="exam", cascade="all, delete-orphan")
 
     # questions of the current version; kept the old name so existing callers work unchanged
@@ -136,8 +137,6 @@ class Submission(db.Model):
     max_score = db.Column(db.Float)
     percent = db.Column(db.Float)
     passed = db.Column(db.Boolean)
-    certificate_key = db.Column(db.String(500))
-    certificate_id = db.Column(db.String(20))
     status = db.Column(db.String(20), default="pending")  # in_progress | pending | graded | error
     started_at = db.Column(db.DateTime, default=utcnow, nullable=False)
     submitted_at = db.Column(db.DateTime, default=utcnow)
@@ -150,6 +149,7 @@ class Submission(db.Model):
 
     student = db.relationship("User")
     version = db.relationship("ExamVersion")
+    certificate = db.relationship("Certificate", uselist=False, backref="submission")
     events = db.relationship("AttemptEvent", backref="submission", cascade="all, delete-orphan",
                              order_by="AttemptEvent.id")
 
@@ -172,3 +172,20 @@ class AttemptEvent(db.Model):
     detail = db.Column(db.Unicode(300))
     counted = db.Column(db.Boolean, default=False, nullable=False)
     at = db.Column(db.DateTime, default=utcnow, nullable=False)
+
+
+class Certificate(db.Model):
+    """Lives apart from the attempt so its status can still be verified after a retake deletes the attempt.
+    The PDF itself is rendered by the Lambda grader and stored on S3 (or locally in demo mode)."""
+    __tablename__ = "certificates"
+    id = db.Column(db.Integer, primary_key=True)
+    code = db.Column(db.String(20), unique=True, nullable=False)  # printed on the PDF, used in /verify/<code>
+    exam_id = db.Column(db.Integer, db.ForeignKey("exams.id"), nullable=False)
+    student_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)
+    submission_id = db.Column(db.Integer, db.ForeignKey("submissions.id"))  # NULL once the attempt is deleted
+    s3_key = db.Column(db.String(500))
+    status = db.Column(db.String(20), default="issuing", nullable=False)  # issuing | valid | invalidated | revoked
+    issued_at = db.Column(db.DateTime)
+    status_changed_at = db.Column(db.DateTime)
+
+    student = db.relationship("User")

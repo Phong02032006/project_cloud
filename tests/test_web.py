@@ -75,7 +75,7 @@ def test_full_flow(app):
 
     with app.app_context():
         sub = Submission.query.one()
-        key = sub.certificate_key
+        key = sub.certificate.s3_key
     pdf = student.get(f"/local-certificates/{key}")
     assert pdf.status_code == 200 and pdf.data.startswith(b"%PDF")
     assert other.get(f"/local-certificates/{key}").status_code == 403
@@ -434,7 +434,7 @@ def _sub(app):
     with app.app_context():
         sub = Submission.query.one()
         return {"status": sub.status, "violations": sub.violations, "locked": sub.locked_at is not None,
-                "review": sub.review, "cert": sub.certificate_key, "events": [(e.type, e.counted) for e in sub.events]}
+                "review": sub.review, "cert": sub.certificate and sub.certificate.s3_key, "events": [(e.type, e.counted) for e in sub.events]}
 
 
 def test_settings_snapshot_policy_into_new_version(app):
@@ -587,3 +587,40 @@ def test_withheld_attempt_can_be_cancelled(app, monkeypatch):
     assert "Result cancelled" in page and "1/2" not in page
     assert "Cancelled" in teacher.get(f"/teacher/exams/{exam_id}/results.csv").get_data(as_text=True) or \
         "cancelled" in teacher.get(f"/teacher/exams/{exam_id}/results.csv").get_data(as_text=True)
+
+
+def test_certificate_verification_page(app):
+    from models import Certificate
+    _, student, _, exam_id = _setup(app)
+    student.post(f"/student/exams/{exam_id}", data={"csrf": csrf(student, f"/student/exams/{exam_id}"), "q1": "0"})
+    with app.app_context():
+        cert = Certificate.query.one()
+        code, sub_id = cert.code, cert.submission_id
+        assert cert.status == "valid" and cert.s3_key and cert.issued_at
+
+    anon = app.test_client()
+    page = anon.get(f"/verify/{code}").get_data(as_text=True)
+    assert "Valid" in page and "S" in page and "E" in page
+    assert anon.get(f"/verify/{code.lower()}").status_code == 200
+    assert anon.get("/verify/NOPE123").status_code == 404
+    assert anon.get(f"/verify?code={code}").headers["Location"].endswith(f"/verify/{code}")
+    assert code in student.get(f"/submissions/{sub_id}").get_data(as_text=True)
+
+
+def test_regrade_reuses_certificate_code(app, monkeypatch):
+    import grader_client
+    from models import Certificate
+    _, student, _, exam_id = _setup(app)
+    payloads = []
+    real = grader_client.grade_submission
+    monkeypatch.setattr(grader_client, "grade_submission", lambda p: payloads.append(p) or real(p))
+    r = student.post(f"/student/exams/{exam_id}", data={"csrf": csrf(student, f"/student/exams/{exam_id}"), "q1": "0"})
+    with app.app_context():
+        sub = Submission.query.one()
+        sub.status = "error"
+        db.session.commit()
+    student.post(f"{r.headers['Location']}/regrade", data={"csrf": csrf(student, r.headers["Location"])})
+    with app.app_context():
+        code = Certificate.query.one().code
+    assert [p["certificate_id"] for p in payloads] == [code, code]
+    assert payloads[0]["verify_url"].endswith(f"/verify/{code}")

@@ -14,7 +14,7 @@ import grader_client
 from auth import bp as auth_bp
 from auth import login_required
 from config import Config
-from models import DEFAULT_POLICY, AttemptEvent, Exam, ExamVersion, Question, Submission, db, utcnow
+from models import DEFAULT_POLICY, AttemptEvent, Certificate, Exam, ExamVersion, Question, Submission, db, utcnow
 
 LETTERS = "ABCDEFGH"
 
@@ -123,7 +123,11 @@ CLIENT_EVENTS = {"fullscreen_exit": True, "focus_lost": True, "copy": False, "pa
 def _apply_result(sub, result):
     sub.score, sub.max_score, sub.percent = result["score"], result["max_score"], result["percent"]
     sub.passed, sub.details = result["passed"], result["details"]
-    sub.certificate_key, sub.certificate_id = result["certificate_key"], result["certificate_id"]
+    if result["certificate_key"] and sub.certificate:
+        cert = sub.certificate
+        cert.s3_key, cert.issued_at = result["certificate_key"], cert.issued_at or utcnow()
+        if cert.status == "issuing":
+            cert.status, cert.status_changed_at = "valid", utcnow()
     sub.status = "graded"
 
 
@@ -197,14 +201,22 @@ def _grade_and_save(app, sub):
                 and sub.review not in ("released", "cancelled"))
     if withhold:
         sub.review = "withheld"
+    issue = not withhold and sub.review != "cancelled"
+    if issue and sub.certificate is None:
+        db.session.add(Certificate(code=secrets.token_hex(5).upper(), exam_id=sub.exam_id, student_id=sub.student_id,
+                                   submission=sub))
+        db.session.flush()
     payload = {
         "submission_id": sub.id,
         "student": {"name": sub.student.name, "email": sub.student.email},
         "exam": {"id": exam.id, "title": exam.title, "pass_percent": version.pass_percent},
         "questions": [{"id": q.id, "points": q.points, "correct": q.correct} for q in version.questions],
         "answers": sub.answers,
-        "issue_certificate": not withhold and sub.review != "cancelled",
+        "issue_certificate": issue,
     }
+    if issue:
+        payload["certificate_id"] = sub.certificate.code
+        payload["verify_url"] = url_for("verify_certificate", code=sub.certificate.code, _external=True)
     try:
         if grader_client.is_async():
             grader_client.enqueue_submission(payload)
@@ -411,7 +423,7 @@ def register_routes(app):
                 continue
             w.writerow([s.student.name, s.student.email, s.score, s.max_score, s.percent,
                         "Passed" if s.passed else "Failed", s.submitted_at.strftime("%Y-%m-%d %H:%M"),
-                        s.certificate_id or "", s.violations, s.review or ""])
+                        s.certificate.code if s.certificate else "", s.violations, s.review or ""])
         # BOM so Excel opens Vietnamese text correctly.
         return Response("\ufeff" + buf.getvalue(), mimetype="text/csv",
                         headers={"Content-Disposition": f"attachment; filename=ket-qua-exam-{exam.id}.csv"})
@@ -482,9 +494,10 @@ def register_routes(app):
         if sub.status == "in_progress" and g.user.id == sub.student_id:
             return redirect(url_for("take_exam", exam_id=sub.exam_id))
         cert_url = None
-        if sub.certificate_key and not sub.result_hidden:
+        cert = sub.certificate
+        if cert and cert.status == "valid" and cert.s3_key and not sub.result_hidden:
             try:
-                cert_url = grader_client.certificate_url(sub.certificate_key)
+                cert_url = grader_client.certificate_url(cert.s3_key)
             except Exception:
                 app.logger.exception("presign failed")
         details = {d["question_id"]: d for d in (sub.details or [])}
@@ -646,10 +659,21 @@ def register_routes(app):
     def local_certificate(key):
         if not grader_client.is_local():
             abort(404)
-        sub = Submission.query.filter_by(certificate_key=key).first_or_404()
-        if g.user.id not in (sub.student_id, sub.exam.teacher_id):
+        cert = Certificate.query.filter_by(s3_key=key).first_or_404()
+        if g.user.id not in (cert.student_id, cert.exam.teacher_id):
             abort(403)
         return send_file(grader_client.local_certificate_path(key), mimetype="application/pdf")
+
+    @app.route("/verify/<code>")
+    def verify_certificate(code):
+        """Public: anyone holding a certificate can check it is genuine and still valid."""
+        cert = Certificate.query.filter_by(code=code.strip().upper()).first()
+        return render_template("verify.html", cert=cert, code=code), 200 if cert else 404
+
+    @app.route("/verify")
+    def verify_lookup():
+        code = request.args.get("code", "").strip()
+        return redirect(url_for("verify_certificate", code=code)) if code else render_template("verify.html", cert=None, code="")
 
     @app.errorhandler(400)
     def bad_request(e):

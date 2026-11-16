@@ -16,7 +16,8 @@ def process_submission(payload, store):
         # Withheld for review: grade only, no PDF until the teacher releases it.
         return {**result, "passed": passed, "certificate_id": None, "certificate_key": None}
 
-    cert_id = uuid.uuid4().hex[:10].upper()
+    # The web app chooses the code so a regrade re-issues the same certificate instead of a new one.
+    cert_id = payload.get("certificate_id") or uuid.uuid4().hex[:10].upper()
     pdf = build_certificate(
         student_name=student["name"],
         exam_title=exam["title"],
@@ -26,6 +27,7 @@ def process_submission(payload, store):
         passed=passed,
         issued_at=datetime.datetime.now(datetime.timezone.utc).strftime("%B %d, %Y"),
         cert_id=cert_id,
+        verify_url=payload.get("verify_url"),
     )
     key = f"certificates/exam-{exam['id']}/submission-{payload['submission_id']}-{cert_id}.pdf"
     store(key, pdf)

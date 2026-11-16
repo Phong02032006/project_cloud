@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block title %}Verify certificate{% endblock %}
+{% block content %}
+<div class="row justify-content-center">
+  <div class="col-lg-6">
+    <h2 class="mb-4">Verify a certificate</h2>
+    <form method="get" action="{{ url_for('verify_lookup') }}" class="d-flex gap-2 mb-4">
+      <input name="code" class="form-control" placeholder="Certificate ID, e.g. 4F2A9C01BD" value="{{ code }}" required>
+      <button class="btn btn-primary">Check</button>
+    </form>
+    {% if code %}
+      {% if not cert %}
+        <div class="qc-card p-4"><span class="qc-chip danger"><i class="bi bi-x-circle-fill"></i> Not found</span>
+          <p class="mt-3 mb-0">No certificate with ID <b>{{ code }}</b> was issued by QuizCloud.</p></div>
+      {% else %}
+        {% set tone = {'valid': 'success', 'issuing': 'warning'}.get(cert.status, 'danger') %}
+        {% set label = {'valid': 'Valid', 'issuing': 'Being issued', 'invalidated': 'Invalidated (exam retaken)', 'revoked': 'Revoked'}.get(cert.status, cert.status) %}
+        <div class="qc-card p-4">
+          <span class="qc-chip {{ tone }} fs-6"><i class="bi {{ 'bi-patch-check-fill' if cert.status == 'valid' else 'bi-exclamation-octagon-fill' }}"></i> {{ label }}</span>
+          <dl class="row mt-3 mb-0">
+            <dt class="col-sm-4">Certificate ID</dt><dd class="col-sm-8">{{ cert.code }}</dd>
+            <dt class="col-sm-4">Student</dt><dd class="col-sm-8">{{ cert.student.name }}</dd>
+            <dt class="col-sm-4">Exam</dt><dd class="col-sm-8">{{ cert.exam.title }}</dd>
+            <dt class="col-sm-4">Issued</dt><dd class="col-sm-8">{{ cert.issued_at.strftime('%b %d, %Y') if cert.issued_at else '-' }}</dd>
+            {% if cert.status not in ('valid', 'issuing') %}
+            <dt class="col-sm-4">Status since</dt><dd class="col-sm-8">{{ cert.status_changed_at.strftime('%b %d, %Y') if cert.status_changed_at else '-' }}</dd>
+            {% endif %}
+          </dl>
+        </div>
+      {% endif %}
+    {% endif %}
+  </div>
+</div>
+{% endblock %}

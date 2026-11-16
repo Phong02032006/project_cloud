@@ -198,3 +198,12 @@ def test_notify_sends_cancel_notice(aws):
     bad = handler.lambda_handler(_event({"action": "notify", "kind": "nope", "student": PAYLOAD["student"],
                                          "exam": PAYLOAD["exam"]}), None)
     assert bad["statusCode"] == 400
+
+
+def test_certificate_uses_given_code_and_verify_link(aws):
+    s3, _ = aws
+    resp = handler.lambda_handler(_event({**PAYLOAD, "certificate_id": "ABC123DEF0",
+                                          "verify_url": "https://quiz.example/verify/ABC123DEF0"}), None)
+    body = json.loads(resp["body"])
+    assert body["certificate_id"] == "ABC123DEF0" and body["certificate_key"].endswith("-ABC123DEF0.pdf")
+    assert b"https://quiz.example/verify/ABC123DEF0" in s3.objects[body["certificate_key"]]

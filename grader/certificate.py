@@ -6,7 +6,8 @@ from fpdf import FPDF
 FONT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fonts")
 
 
-def build_certificate(*, student_name, exam_title, score, max_score, percent, passed, issued_at, cert_id):
+def build_certificate(*, student_name, exam_title, score, max_score, percent, passed, issued_at, cert_id,
+                      verify_url=None):
     pdf = FPDF(orientation="L", unit="mm", format="A4")
     pdf.set_auto_page_break(False)
     pdf.add_page()
@@ -61,5 +62,9 @@ def build_certificate(*, student_name, exam_title, score, max_score, percent, pa
     pdf.cell(120, 6, f"Issued on: {issued_at}")
     pdf.set_xy(152, 178)
     pdf.cell(120, 6, f"Certificate ID: {cert_id}", align="R")
+    if verify_url:
+        pdf.set_font("DejaVu", "", 9)
+        pdf.set_xy(15, 186)
+        pdf.cell(267, 5, f"Verify this certificate at {verify_url}", align="C", link=verify_url)
 
     return bytes(pdf.output())
