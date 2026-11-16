@@ -61,6 +61,7 @@ class Exam(db.Model):
     # every question row this exam ever owned; only here so deleting the exam cleans them up
     question_rows = db.relationship("Question", backref="exam", cascade="all, delete-orphan")
     certificates = db.relationship("Certificate", backref="exam", cascade="all, delete-orphan")
+    tickets = db.relationship("RetakeTicket", backref="exam", cascade="all, delete-orphan")
     submissions = db.relationship("Submission", backref="exam", cascade="all, delete-orphan")
 
     # questions of the current version; kept the old name so existing callers work unchanged
@@ -195,3 +196,23 @@ class Certificate(db.Model):
     status_changed_at = db.Column(db.DateTime)
 
     student = db.relationship("User")
+
+
+class RetakeTicket(db.Model):
+    """A teacher's one-off grant. Claiming it erases the student's attempts (as if they never took the exam),
+    invalidates their certificate and starts a new attempt straight away."""
+    __tablename__ = "retake_tickets"
+    id = db.Column(db.Integer, primary_key=True)
+    exam_id = db.Column(db.Integer, db.ForeignKey("exams.id"), nullable=False)
+    student_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)
+    granted_by_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)
+    granted_at = db.Column(db.DateTime, default=utcnow, nullable=False)
+    expires_at = db.Column(db.DateTime)
+    full = db.Column(db.Boolean, default=False, nullable=False)  # True: all N attempts again; False: one attempt
+    claimed_at = db.Column(db.DateTime)
+
+    student = db.relationship("User", foreign_keys=[student_id])
+
+    @property
+    def is_open(self):
+        return self.claimed_at is None and (self.expires_at is None or utcnow() < self.expires_at)

@@ -50,6 +50,13 @@ NOTICES = {
     "withheld": ("Exam result under review: {title}",
                  "Hi {name},\n\nYour submission for \"{title}\" was flagged during the managed exam and is being "
                  "reviewed by your teacher. Your result and certificate will be available once the review is done.\n"),
+    "retake_granted": ("Retake available: {title}",
+                       "Hi {name},\n\nYour teacher has given you a retake for \"{title}\". Claiming it erases your "
+                       "previous attempts and invalidates any certificate you received for this exam, then starts "
+                       "the exam immediately. Open QuizCloud when you are ready.\n"),
+    "invalidated": ("Certificate invalidated: {title}",
+                    "Hi {name},\n\nYou claimed a retake for \"{title}\", so your previous certificate for this exam "
+                    "is no longer valid. Your new attempt has started.\n"),
     "cancelled": ("Exam certificate cancelled: {title}",
                   "Hi {name},\n\nAfter review, your teacher cancelled the result and certificate for \"{title}\". "
                   "Please contact your teacher if you have questions.\n"),

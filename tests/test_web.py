@@ -739,3 +739,115 @@ def test_concurrent_start_creates_one_attempt(app):
         assert _start_attempt(exam, sid, []) is not None
         assert _start_attempt(exam, sid, []) is None
         assert Submission.query.count() == 1
+
+
+def _grant(teacher, t, exam_id, student_id=2, **form):
+    return teacher.post(f"/teacher/exams/{exam_id}/students/{student_id}/retake",
+                        data={"csrf": t, "understand": "on", **form})
+
+
+def test_retake_grant_warns_exports_and_notifies(app, monkeypatch):
+    import json
+
+    import grader_client
+    from models import RetakeTicket
+    sent = []
+    monkeypatch.setattr(grader_client, "notify", sent.append)
+    teacher, student, t, exam_id = _setup(app)
+    assert teacher.get(f"/teacher/exams/{exam_id}/students/2/retake").status_code == 404  # nothing to retake yet
+    _take(student, exam_id, {"q1": "0"})
+
+    page = teacher.get(f"/teacher/exams/{exam_id}/students/2/retake").get_data(as_text=True)
+    assert "permanently deleted" in page and "attempts.json" in page
+    export = teacher.get(f"/teacher/exams/{exam_id}/students/2/attempts.json")
+    data = json.loads(export.data)
+    assert "attachment" in export.headers["Content-Disposition"]
+    assert data["attempts"][0]["answers"] == {"1": [0], "2": []} and data["attempts"][0]["certificate"]["status"] == "valid"
+    assert data["attempts"][0]["questions"][0]["text"] == "First question?"
+
+    teacher.post(f"/teacher/exams/{exam_id}/students/2/retake", data={"csrf": t})
+    with app.app_context():
+        assert RetakeTicket.query.count() == 0  # the "I understand" box is required
+    _grant(teacher, t, exam_id)
+    _grant(teacher, t, exam_id)
+    with app.app_context():
+        assert RetakeTicket.query.count() == 1
+    assert [n["kind"] for n in sent] == ["retake_granted"]
+    assert "Claim retake" in student.get("/student").get_data(as_text=True)
+
+
+def test_claiming_retake_erases_attempts_and_invalidates_certificate(app, monkeypatch):
+    import grader_client
+    from models import AttemptEvent, Certificate, RetakeTicket
+    sent = []
+    monkeypatch.setattr(grader_client, "notify", sent.append)
+    teacher, student, t, exam_id = _setup(app)
+    _managed(app, teacher, t, exam_id, reentry_approval=None)
+    s = csrf(student, f"/student/exams/{exam_id}")
+    student.post("/submissions/1/events", data={"csrf": s, "type": "focus_lost"})
+    student.post(f"/student/exams/{exam_id}", data={"csrf": s, "q1": "0"})
+    with app.app_context():
+        code = Certificate.query.one().code
+    _grant(teacher, t, exam_id)
+
+    other = app.test_client()
+    login(other, "O", "o@x.edu", "student")
+    assert other.post("/student/tickets/1/claim", data={"csrf": csrf(other, "/student")}).status_code == 403
+
+    r = student.post("/student/tickets/1/claim", data={"csrf": s})
+    assert r.headers["Location"].endswith(f"/student/exams/{exam_id}")
+    with app.app_context():
+        subs = Submission.query.all()
+        assert [(a.attempt_no, a.status, a.selected, a.violations) for a in subs] == [(1, "in_progress", True, 0)]
+        assert AttemptEvent.query.count() == 0
+        cert = Certificate.query.one()
+        assert cert.status == "invalidated" and cert.submission_id is None
+        assert RetakeTicket.query.one().claimed_at is not None
+    assert sent[-1]["kind"] == "invalidated"
+    assert "Invalidated" in app.test_client().get(f"/verify/{code}").get_data(as_text=True)
+
+    # One-way: the ticket cannot be used again.
+    _take(student, exam_id, {"q1": "0"})
+    r = student.post("/student/tickets/1/claim", data={"csrf": s})
+    assert "already used" in student.get(r.headers["Location"]).get_data(as_text=True)
+
+
+def test_expired_retake_cannot_be_claimed(app):
+    teacher, student, t, exam_id = _setup(app)
+    _take(student, exam_id, {"q1": "0"})
+    _grant(teacher, t, exam_id, expires_at="2000-01-01T00:00")
+    s = csrf(student, "/student")
+    assert "Claim retake" not in student.get("/student").get_data(as_text=True)
+    student.post("/student/tickets/1/claim", data={"csrf": s})
+    with app.app_context():
+        assert Submission.query.one().status == "graded"
+
+
+def test_retake_scope_on_multi_attempt_exam(app):
+    teacher, student, t, exam_id = _setup(app)
+    _multi(app, teacher, t, exam_id)
+    _take(student, exam_id, {"q1": "0"})
+    s = csrf(student, "/student")
+    student.post("/student/attempts/1/select", data={"csrf": s})
+
+    _grant(teacher, t, exam_id, scope="one")
+    student.post("/student/tickets/1/claim", data={"csrf": s})
+    with app.app_context():
+        assert [(a.attempt_no, a.selected) for a in Submission.query.all()] == [(1, True)]  # counts automatically
+    _take(student, exam_id, {"q1": "0"})
+
+    _grant(teacher, t, exam_id, scope="full")
+    student.post("/student/tickets/2/claim", data={"csrf": s})
+    _take(student, exam_id, {"q1": "0"})
+    page = student.get(f"/student/exams/{exam_id}/attempts").get_data(as_text=True)
+    assert "1/3 attempts used" in page and "Start attempt 2" in page and "Choose this one" in page
+
+
+def test_withdraw_retake(app):
+    from models import RetakeTicket
+    teacher, student, t, exam_id = _setup(app)
+    _take(student, exam_id, {"q1": "0"})
+    _grant(teacher, t, exam_id)
+    teacher.post("/teacher/tickets/1/withdraw", data={"csrf": t})
+    with app.app_context():
+        assert RetakeTicket.query.count() == 0

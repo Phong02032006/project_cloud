@@ -41,6 +41,16 @@
           {% if e.settings.managed %}<span><i class="bi bi-shield-lock text-primary"></i> Managed</span>{% endif %}
           {% if e.max_attempts > 1 %}<span><i class="bi bi-arrow-repeat text-primary"></i> {{ attempts.get(e.id, [])|length }}/{{ e.max_attempts }} attempts</span>{% endif %}
         </div>
+        {% set ticket = tickets.get(e.id) %}
+        {% if ticket and not (s and s.status == 'in_progress') %}
+          <div class="mb-2">{% if ticket %}
+            <form method="post" action="{{ url_for('ticket_claim', ticket_id=ticket.id) }}" class="m-0"
+                  data-confirm="Claim your retake? Your previous attempts are erased, your certificate for this exam is invalidated, and the exam starts immediately.">
+              <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+              <button class="btn btn-warning w-100"><i class="bi bi-arrow-counterclockwise"></i> Claim retake{% if ticket.expires_at %} (until {{ ticket.expires_at.strftime('%b %d %H:%M') }} UTC){% endif %}</button>
+            </form>
+          {% endif %}</div>
+        {% endif %}
         {% if e.max_attempts > 1 and s and s.status != 'in_progress' %}
           <a href="{{ url_for('exam_attempts', exam_id=e.id) }}" class="btn btn-ghost">{{ 'View result' if s.selected else 'Attempts & choose' }} <i class="bi bi-arrow-right"></i></a>
         {% elif s and s.status == 'in_progress' %}

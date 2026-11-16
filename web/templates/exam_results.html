@@ -64,7 +64,10 @@
           {% if s.review %}<span class="qc-chip {{ 'warning' if s.review == 'withheld' else 'muted' }}">{{ s.review|capitalize }}</span>{% endif %}
         </td>
         <td class="small text-secondary">{{ s.submitted_at.strftime('%b %d, %Y %H:%M') }}</td>
-        <td class="text-end"><a href="{{ url_for('submission_view', sub_id=s.id) }}" class="btn btn-sm btn-ghost">Details <i class="bi bi-chevron-right"></i></a></td>
+        <td class="text-end text-nowrap"><a href="{{ url_for('submission_view', sub_id=s.id) }}" class="btn btn-sm btn-ghost">Details <i class="bi bi-chevron-right"></i></a>
+          {% if loop.last or loop.nextitem.student_id != s.student_id %}
+            <a href="{{ url_for('ticket_grant', exam_id=exam.id, student_id=s.student_id) }}" class="btn btn-sm btn-ghost">{% if tickets.get(s.student_id) %}<span class="qc-chip info">Retake granted</span>{% else %}<i class="bi bi-arrow-counterclockwise"></i> Retake{% endif %}</a>
+          {% endif %}</td>
       </tr>
     {% else %}
       <tr><td colspan="8"><div class="qc-empty"><i class="bi bi-inbox"></i>No submissions yet.</div></td></tr>

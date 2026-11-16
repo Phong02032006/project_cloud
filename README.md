@@ -163,10 +163,12 @@ Deploy Azure to `Southeast Asia` and AWS to `ap-southeast-1` (Singapore) to keep
    | `WEB_CALLBACK_URL` | `https://<your-app>.azurewebsites.net/api/grader/callback` |
    | `SES_SENDER` | (Optional) Verified SES email address |
    | `PRESIGN_TTL_SECONDS` | `3600` |
+   | `WEB_CRON_URL` | (Optional) Defaults to `WEB_CALLBACK_URL` with `/api/cron/finalize` |
 
 5. **SQS Trigger:** In the Lambda console, add an SQS trigger pointing to `quizcloud-grading` with **Batch size = 1**.
 6. **API Gateway:** Create an HTTP API with a Lambda integration pointing to your function. Add route `POST /grade`. The complete endpoint URL becomes `GRADER_URL`.
 7. **SES:** Verify sender and test recipient emails if testing SES from sandbox mode.
+8. **EventBridge schedule:** In EventBridge Scheduler, create a recurring schedule (`rate(15 minutes)`) that invokes the same Lambda function. The Lambda then calls `POST /api/cron/finalize` on the web app (derived from `WEB_CALLBACK_URL`; override with `WEB_CRON_URL`), which expires abandoned attempts and picks the best attempt for students who missed an exam's choose-by deadline. The same work also runs whenever a page touches those attempts, so a missed run only delays certificates.
 
 Verify the endpoint with curl:
 ```bash

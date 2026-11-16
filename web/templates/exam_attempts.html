@@ -21,6 +21,14 @@
   {% endif %}
 </div>
 
+{% if ticket %}
+  <form method="post" action="{{ url_for('ticket_claim', ticket_id=ticket.id) }}" class="m-0"
+        data-confirm="Claim your retake? Your previous attempts are erased, your certificate for this exam is invalidated, and the exam starts immediately.">
+    <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+    <button class="btn btn-warning w-100"><i class="bi bi-arrow-counterclockwise"></i> Claim retake{% if ticket.expires_at %} (until {{ ticket.expires_at.strftime('%b %d %H:%M') }} UTC){% endif %}</button>
+  </form>
+{% endif %}
+
 {% if not chosen and attempts %}
 <div class="alert alert-info">Pick the attempt that counts. Only that attempt gets a certificate, and picking one ends the exam for you: no further attempts.
   {% if exam.selection_deadline %}If you have not picked by the deadline, your best attempt is picked for you.{% endif %}</div>

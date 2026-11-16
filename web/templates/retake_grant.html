@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+{% block title %}Retake - {{ student.name }}{% endblock %}
+{% block content %}
+<a href="{{ url_for('exam_results', exam_id=exam.id) }}" class="qc-breadcrumb"><i class="bi bi-arrow-left"></i> Results</a>
+<div class="row justify-content-center mt-1">
+  <div class="col-lg-8">
+    <h2 class="mb-1">Grant a retake</h2>
+    <div class="text-secondary mb-4">{{ student.name }} · {{ exam.title }}</div>
+
+    {% if open_ticket %}
+    <div class="qc-card p-4">
+      <p class="mb-3">{{ student.name }} already has an open retake{% if open_ticket.expires_at %}, valid until {{ open_ticket.expires_at.strftime('%b %d, %Y %H:%M') }} UTC{% endif %}.</p>
+      <form method="post" action="{{ url_for('ticket_withdraw', ticket_id=open_ticket.id) }}" class="m-0" data-confirm="Withdraw this retake?">
+        <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+        <button class="btn btn-ghost text-danger"><i class="bi bi-x-circle"></i> Withdraw retake</button>
+      </form>
+    </div>
+    {% else %}
+    <div class="alert alert-danger">
+      <div class="fw-bold mb-1"><i class="bi bi-exclamation-octagon-fill"></i> When the student claims this retake:</div>
+      <ul class="mb-0">
+        <li>All {{ attempts|length|plural("attempt") }} below are <b>permanently deleted</b>: answers, scores and the managed-mode event log. They are not kept anywhere in QuizCloud.</li>
+        <li>Their certificate for this exam is marked <b>invalidated</b> on the public verification page, and they are emailed about it.</li>
+        <li>A new attempt starts immediately.</li>
+      </ul>
+    </div>
+
+    <div class="qc-card p-4 mb-4">
+      <div class="d-flex flex-wrap align-items-center gap-2 mb-3">
+        <h5 class="m-0 flex-grow-1">Current attempts</h5>
+        <a class="btn btn-soft btn-sm" href="{{ url_for('attempts_export', exam_id=exam.id, student_id=student.id) }}"><i class="bi bi-download"></i> Download attempts (.json)</a>
+      </div>
+      {% for a in attempts %}
+        <div class="d-flex gap-2 py-2 border-top small">
+          <b>#{{ a.attempt_no }}</b>
+          <span class="flex-grow-1">{{ a.status|replace('_', ' ') }}{% if a.score is not none %} · {{ a.score|num }}/{{ a.max_score|num }}{% endif %}{% if a.violations %} · {{ a.violations|plural("violation") }}{% endif %}</span>
+          {% if a.selected %}<span class="qc-chip success">Counts</span>{% endif %}
+          {% if a.certificate %}<span class="qc-chip">Certificate {{ a.certificate.code }} ({{ a.certificate.status }})</span>{% endif %}
+        </div>
+      {% endfor %}
+      <p class="small text-secondary mt-3 mb-0">Download the file now if you need these records later; it is the only copy that will remain.</p>
+    </div>
+
+    <form method="post" class="qc-card p-4">
+      <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+      {% if exam.max_attempts > 1 %}
+      <div class="mb-3">
+        <div class="form-label">The retake gives</div>
+        <div class="form-check"><input class="form-check-input" type="radio" name="scope" value="one" id="scope-one" checked><label class="form-check-label" for="scope-one">One attempt, which counts automatically</label></div>
+        <div class="form-check"><input class="form-check-input" type="radio" name="scope" value="full" id="scope-full"><label class="form-check-label" for="scope-full">All {{ exam.max_attempts }} attempts again, then the student chooses</label></div>
+      </div>
+      {% endif %}
+      <div class="mb-3">
+        <label class="form-label">Claim before (UTC, optional)</label>
+        <input name="expires_at" type="datetime-local" class="form-control" style="max-width:16rem">
+        <div class="form-text">Leave empty for no expiry.</div>
+      </div>
+      <div class="form-check mb-3">
+        <input class="form-check-input" type="checkbox" name="understand" id="understand" required>
+        <label class="form-check-label" for="understand">I understand that claiming this retake permanently deletes these attempts and invalidates the certificate.</label>
+      </div>
+      <button class="btn btn-primary"><i class="bi bi-arrow-counterclockwise"></i> Grant retake</button>
+    </form>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}

@@ -1,5 +1,6 @@
 import csv
 import io
+import json
 import secrets
 import statistics
 from datetime import datetime, timedelta
@@ -16,7 +17,8 @@ import grader_client
 from auth import bp as auth_bp
 from auth import login_required
 from config import Config
-from models import DEFAULT_POLICY, AttemptEvent, Certificate, Exam, ExamVersion, Question, Submission, db, utcnow
+from models import (DEFAULT_POLICY, AttemptEvent, Certificate, Exam, ExamVersion, Question, RetakeTicket, Submission,
+                    User, db, utcnow)
 
 LETTERS = "ABCDEFGH"
 
@@ -192,12 +194,32 @@ def _attempts(exam, student_id):
     return Submission.query.filter_by(exam_id=exam.id, student_id=student_id).order_by(Submission.attempt_no).all()
 
 
+def _claimed_ticket(exam, student_id):
+    return (RetakeTicket.query.filter(RetakeTicket.exam_id == exam.id, RetakeTicket.student_id == student_id,
+                                      RetakeTicket.claimed_at.isnot(None))
+            .order_by(RetakeTicket.claimed_at.desc()).first())
+
+
+def _open_ticket(exam, student_id):
+    tickets = RetakeTicket.query.filter_by(exam_id=exam.id, student_id=student_id, claimed_at=None).all()
+    return next((t for t in tickets if t.is_open), None)
+
+
 def _allowance(exam, student_id):
-    return exam.max_attempts
+    ticket = _claimed_ticket(exam, student_id)
+    return 1 if ticket and not ticket.full else exam.max_attempts
 
 
 def _window_closed(exam, student_id):
-    return exam.selection_deadline is not None and utcnow() >= exam.selection_deadline
+    deadline = exam.selection_deadline
+    if deadline is None or utcnow() < deadline:
+        return False
+    # A retake claimed after the deadline runs until its attempts are used up.
+    ticket = _claimed_ticket(exam, student_id)
+    if ticket and ticket.claimed_at >= deadline:
+        used = Submission.query.filter_by(exam_id=exam.id, student_id=student_id).count()
+        return used >= _allowance(exam, student_id)
+    return True
 
 
 def _can_start(exam, attempts):
@@ -492,7 +514,9 @@ def register_routes(app):
         exam = _own_exam(exam_id)
         _finalize_exam(app, exam)
         subs = sorted(exam.submissions, key=lambda s: (s.student.name, s.attempt_no))
-        return render_template("exam_results.html", exam=exam, submissions=subs, stats=_exam_stats(exam))
+        tickets = {t.student_id: t for t in exam.tickets if t.is_open}
+        return render_template("exam_results.html", exam=exam, submissions=subs, stats=_exam_stats(exam),
+                               tickets=tickets)
 
     @app.route("/teacher/exams/<int:exam_id>/results.csv")
     @login_required("teacher")
@@ -535,7 +559,10 @@ def register_routes(app):
         # The attempt shown on each card: the running one, else the selected one, else the latest.
         mine = {eid: next((a for a in subs if a.status == "in_progress"), None)
                 or next((a for a in subs if a.selected), None) or subs[-1] for eid, subs in by_exam.items()}
-        return render_template("student_dashboard.html", exams=exams, mine=mine, attempts=by_exam)
+        tickets = {t.exam_id: t for t in RetakeTicket.query.filter_by(student_id=g.user.id, claimed_at=None)
+                   if t.is_open}
+        return render_template("student_dashboard.html", exams=exams, mine=mine, attempts=by_exam,
+                               tickets=tickets)
 
     @app.route("/student/exams/<int:exam_id>", methods=["GET", "POST"])
     @login_required("student")
@@ -588,7 +615,8 @@ def register_routes(app):
         return render_template("exam_attempts.html", exam=exam, attempts=attempts,
                                allowance=_allowance(exam, g.user.id),
                                can_start=exam.published and _can_start(exam, attempts),
-                               window_closed=_window_closed(exam, g.user.id))
+                               window_closed=_window_closed(exam, g.user.id),
+                               ticket=_open_ticket(exam, g.user.id))
 
     @app.route("/student/exams/<int:exam_id>/start", methods=["POST"])
     @login_required("student")
@@ -617,6 +645,46 @@ def register_routes(app):
         else:
             flash(f"Attempt {sub.attempt_no} selected. This exam is now final.", "success")
         return redirect(url_for("exam_attempts", exam_id=sub.exam_id))
+
+    @app.route("/student/tickets/<int:ticket_id>/claim", methods=["POST"])
+    @login_required("student")
+    def ticket_claim(ticket_id):
+        ticket = db.get_or_404(RetakeTicket, ticket_id)
+        exam = ticket.exam
+        if ticket.student_id != g.user.id:
+            abort(403)
+        attempts = _attempts(exam, g.user.id)
+        _finish_expired(app, attempts)
+        if not exam.published or any(a.status in ("in_progress", "pending") for a in attempts):
+            flash("This retake cannot be claimed right now.", "danger")
+            return redirect(url_for("student_dashboard"))
+        now = utcnow()
+        claimed = db.session.execute(
+            update(RetakeTicket).where(RetakeTicket.id == ticket.id, RetakeTicket.claimed_at.is_(None),
+                                       (RetakeTicket.expires_at.is_(None)) | (RetakeTicket.expires_at > now))
+            .values(claimed_at=now)
+        ).rowcount == 1
+        if not claimed:
+            db.session.rollback()
+            flash("This retake has expired or was already used.", "danger")
+            return redirect(url_for("student_dashboard"))
+        # As if the student never took the exam: the attempts go, the certificate record stays as invalidated.
+        invalidated = 0
+        for cert in Certificate.query.filter_by(exam_id=exam.id, student_id=g.user.id):
+            if cert.status in ("valid", "issuing"):
+                cert.status, cert.status_changed_at = "invalidated", now
+                invalidated += 1
+        for a in attempts:
+            db.session.delete(a)
+        db.session.commit()
+        if invalidated:
+            try:
+                grader_client.notify({"kind": "invalidated", "student": {"name": g.user.name, "email": g.user.email},
+                                      "exam": {"id": exam.id, "title": exam.title}})
+            except Exception:
+                app.logger.exception("invalidation notice failed for ticket %s", ticket.id)
+        _start_attempt(exam, g.user.id, [])
+        return redirect(url_for("take_exam", exam_id=exam.id))
 
     @app.route("/submissions/<int:sub_id>")
     @login_required()
@@ -704,6 +772,83 @@ def register_routes(app):
         return jsonify(attempts=attempts, events=[{
             "student": e.submission.student.name, "type": e.type, "detail": e.detail, "counted": e.counted,
             "at": e.at.strftime("%H:%M:%S")} for e in events])
+
+    def _exam_student(exam_id, student_id):
+        exam = _own_exam(exam_id)
+        student = db.get_or_404(User, student_id)
+        attempts = _attempts(exam, student.id)
+        if not attempts:
+            abort(404)
+        return exam, student, attempts
+
+    @app.route("/teacher/exams/<int:exam_id>/students/<int:student_id>/attempts.json")
+    @login_required("teacher")
+    def attempts_export(exam_id, student_id):
+        """Everything a retake will erase, for the teacher to keep."""
+        exam, student, attempts = _exam_student(exam_id, student_id)
+        data = {
+            "exported_at": utcnow().isoformat() + "Z",
+            "exam": {"id": exam.id, "title": exam.title, "max_attempts": exam.max_attempts},
+            "student": {"id": student.id, "name": student.name, "email": student.email},
+            "attempts": [{
+                "attempt_no": a.attempt_no, "status": a.status, "selected": a.selected, "review": a.review,
+                "started_at": a.started_at.isoformat() + "Z", "submitted_at": a.submitted_at.isoformat() + "Z",
+                "score": a.score, "max_score": a.max_score, "percent": a.percent, "passed": a.passed,
+                "pass_percent": a.version.pass_percent, "policy": a.version.settings,
+                "questions": [{"id": q.id, "text": q.text, "options": q.options, "correct": q.correct,
+                               "points": q.points} for q in a.version.questions],
+                "answers": a.answers, "details": a.details, "violations": a.violations,
+                "events": [{"type": e.type, "detail": e.detail, "counted": e.counted, "at": e.at.isoformat() + "Z"}
+                           for e in a.events],
+                "certificate": {"code": a.certificate.code, "status": a.certificate.status} if a.certificate else None,
+            } for a in attempts],
+        }
+        return Response(json.dumps(data, ensure_ascii=False, indent=2), mimetype="application/json", headers={
+            "Content-Disposition": f"attachment; filename=exam-{exam.id}-student-{student.id}-attempts.json"})
+
+    @app.route("/teacher/exams/<int:exam_id>/students/<int:student_id>/retake", methods=["GET", "POST"])
+    @login_required("teacher")
+    def ticket_grant(exam_id, student_id):
+        exam, student, attempts = _exam_student(exam_id, student_id)
+        open_ticket = _open_ticket(exam, student.id)
+        if request.method == "GET":
+            return render_template("retake_grant.html", exam=exam, student=student, attempts=attempts,
+                                   open_ticket=open_ticket)
+        if open_ticket:
+            flash("This student already has an open retake.", "warning")
+        elif "understand" not in request.form:
+            flash("Confirm that you understand what claiming a retake erases.", "danger")
+            return redirect(url_for("ticket_grant", exam_id=exam.id, student_id=student.id))
+        elif any(a.status == "in_progress" for a in attempts):
+            flash("The student has an attempt in progress; grant the retake after it ends.", "danger")
+        else:
+            expires = request.form.get("expires_at", "").strip()
+            try:
+                expires = datetime.fromisoformat(expires) if expires else None
+            except ValueError:
+                expires = None
+            db.session.add(RetakeTicket(exam_id=exam.id, student_id=student.id, granted_by_id=g.user.id,
+                                        expires_at=expires, full=request.form.get("scope") == "full"))
+            db.session.commit()
+            try:
+                grader_client.notify({"kind": "retake_granted",
+                                      "student": {"name": student.name, "email": student.email},
+                                      "exam": {"id": exam.id, "title": exam.title}})
+            except Exception:
+                app.logger.exception("retake notice failed for exam %s student %s", exam.id, student.id)
+            flash(f"Retake granted to {student.name}.", "success")
+        return redirect(url_for("exam_results", exam_id=exam.id))
+
+    @app.route("/teacher/tickets/<int:ticket_id>/withdraw", methods=["POST"])
+    @login_required("teacher")
+    def ticket_withdraw(ticket_id):
+        ticket = db.get_or_404(RetakeTicket, ticket_id)
+        _own_exam(ticket.exam_id)
+        if ticket.claimed_at is None:
+            db.session.delete(ticket)
+            db.session.commit()
+            flash("Retake withdrawn.", "success")
+        return redirect(url_for("exam_results", exam_id=ticket.exam_id))
 
     @app.route("/teacher/submissions/<int:sub_id>/approve", methods=["POST"])
     @login_required("teacher")
