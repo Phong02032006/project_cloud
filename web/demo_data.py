@@ -21,6 +21,7 @@ EXAMS = [
         "title": "Cloud Security Basics",
         "description": "IAM, encryption and the principle of least privilege.",
         "duration": 10, "pass": 60, "published": True,
+        "policy": {"managed": True, "withhold_if_flagged": True, "autosubmit_after": 5},
         "questions": [
             ("What does the 'least privilege' principle mean?", ["Give admins full access", "Grant only the minimum permissions needed", "Never use passwords", "Turn off logging"], [1]),
             ("Which services store secrets securely?", ["AWS Secrets Manager", "A public S3 bucket", "Azure Key Vault", "A spreadsheet"], [0, 2]),
@@ -52,7 +53,8 @@ def seed_demo(app, grade_fn):
     exams = []
     for spec in EXAMS:
         exam = Exam(title=spec["title"], description=spec["description"], duration_minutes=spec["duration"],
-                    pass_percent=spec["pass"], published=spec["published"], teacher=teacher)
+                    pass_percent=spec["pass"], published=spec["published"], teacher=teacher,
+                    policy=spec.get("policy"))
         rows = [Question(exam=exam, text=text, options=opts, correct=correct, points=1)
                 for text, opts, correct in spec["questions"]]
         db.session.add(exam)

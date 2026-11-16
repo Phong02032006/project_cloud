@@ -215,7 +215,7 @@ def test_async_stuck_submission_can_be_resent(app, monkeypatch):
     assert student.get(f"{sub_path}/status").get_json() == {"status": "pending", "stuck": False}
 
 
-def _setup(app, questions=(("Q1", ["a", "b"], ["0"]), ("Q2", ["a", "b"], ["1"])), duration="10"):
+def _setup(app, questions=(("First question?", ["a", "b"], ["0"]), ("Second question?", ["a", "b"], ["1"])), duration="10"):
     """A published exam plus logged-in teacher and student clients. Returns (teacher, student, csrf, exam_id)."""
     teacher, student = app.test_client(), app.test_client()
     login(teacher, "T", "t@x.edu", "teacher")
@@ -330,14 +330,14 @@ def test_attempt_pinned_to_version_through_edits(app, monkeypatch):
 
     # Teacher edits mid-attempt: add a 5-point question, drop Q1.
     teacher.post(f"/teacher/exams/{exam_id}/questions", data={
-        "csrf": t, "text": "NEW", "options": ["a", "b"], "correct": ["0"], "points": "5"})
+        "csrf": t, "text": "Added later?", "options": ["a", "b"], "correct": ["0"], "points": "5"})
     teacher.post(f"/teacher/exams/{exam_id}/questions/1/delete", data={"csrf": t})
     with app.app_context():
         exam = db.session.get(Exam, exam_id)
-        assert [q.text for q in exam.questions] == ["Q2", "NEW"] and len(exam.versions) == 4
+        assert [q.text for q in exam.questions] == ["Second question?", "Added later?"] and len(exam.versions) == 4
 
     page = student.get(f"/student/exams/{exam_id}").get_data(as_text=True)
-    assert "Q1" in page and "NEW" not in page
+    assert "First question?" in page and "Added later?" not in page
 
     # Fail the first grading so the regrade path runs after the edits too.
     real = grader_client.grade_submission
@@ -348,14 +348,14 @@ def test_attempt_pinned_to_version_through_edits(app, monkeypatch):
     student.post(f"{sub_path}/regrade", data={"csrf": csrf(student, sub_path)})
 
     review = student.get(sub_path).get_data(as_text=True)
-    assert "2/2" in review and "Q1" in review and "NEW" not in review
+    assert "2/2" in review and "First question?" in review and "Added later?" not in review
     with app.app_context():
         assert Submission.query.one().answers == {"1": [0], "2": [1]}
 
     other = app.test_client()
     login(other, "O", "o@x.edu", "student")
     page = other.get(f"/student/exams/{exam_id}").get_data(as_text=True)
-    assert "NEW" in page and "Q1" not in page
+    assert "Added later?" in page and "First question?" not in page
 
 
 def test_versions_created_per_edit(app):
@@ -377,7 +377,7 @@ def test_versions_created_per_edit(app):
 def test_restore_moves_pointer_only(app):
     teacher, student, t, exam_id = _setup(app)
     teacher.post(f"/teacher/exams/{exam_id}/questions", data={
-        "csrf": t, "text": "NEW", "options": ["a", "b"], "correct": ["0"]})
+        "csrf": t, "text": "Added later?", "options": ["a", "b"], "correct": ["0"]})
     with app.app_context():
         first = db.session.get(Exam, exam_id).versions[1].id
     r = teacher.post(f"/teacher/exams/{exam_id}/versions/{first}/restore", data={"csrf": t})
@@ -386,7 +386,7 @@ def test_restore_moves_pointer_only(app):
         exam = db.session.get(Exam, exam_id)
         assert exam.current_version_id == first and len(exam.versions) == 3
     page = student.get(f"/student/exams/{exam_id}").get_data(as_text=True)
-    assert "Q2" in page and "NEW" not in page
+    assert "Second question?" in page and "Added later?" not in page
 
     # A version of another exam cannot be restored here, and other teachers cannot restore at all.
     r = teacher.post("/teacher/exams/new", data={"csrf": t, "title": "Other"})
@@ -420,3 +420,170 @@ def test_manage_page_warns_about_edit_impact(app):
     page = teacher.get(f"/teacher/exams/{exam_id}").get_data(as_text=True)
     assert "version 3" in page and "1 student is mid-attempt" in page and "1 attempt is finished" in page
     assert "2 attempts" in page and page.count("js-edit") >= 4
+
+
+MANAGED = {"managed": "on", "fullscreen": "on", "reentry_approval": "on"}
+
+
+def _managed(app, teacher, t, exam_id, **extra):
+    data = {"csrf": t, "duration_minutes": "10", "pass_percent": "50", **MANAGED, **extra}
+    teacher.post(f"/teacher/exams/{exam_id}/settings", data={k: v for k, v in data.items() if v is not None})
+
+
+def _sub(app):
+    with app.app_context():
+        sub = Submission.query.one()
+        return {"status": sub.status, "violations": sub.violations, "locked": sub.locked_at is not None,
+                "review": sub.review, "cert": sub.certificate_key, "events": [(e.type, e.counted) for e in sub.events]}
+
+
+def test_settings_snapshot_policy_into_new_version(app):
+    teacher, _, t, exam_id = _setup(app)
+    _managed(app, teacher, t, exam_id, reentry_approval=None, autosubmit="on", autosubmit_after="3",
+             allow_paste="on", duration_minutes="20")
+    with app.app_context():
+        exam = db.session.get(Exam, exam_id)
+        p = exam.current_version.settings
+        assert len(exam.versions) == 3 and exam.current_version.duration_minutes == 20
+        assert p["managed"] and p["fullscreen"] and not p["reentry_approval"] and p["allow_paste"]
+        assert p["autosubmit_after"] == 3 and not p["withhold_if_flagged"]
+        assert not exam.versions[1].settings["managed"]
+    page = teacher.get(f"/teacher/exams/{exam_id}").get_data(as_text=True)
+    assert "Managed mode" in page and "Without approval" in page
+
+
+def test_unmanaged_exam_ignores_events(app):
+    _, student, _, exam_id = _setup(app)
+    s = csrf(student, f"/student/exams/{exam_id}")
+    student.get(f"/student/exams/{exam_id}")
+    student.post("/submissions/1/events", data={"csrf": s, "type": "fullscreen_exit"})
+    assert _sub(app)["violations"] == 0 and _sub(app)["events"] == []
+
+
+def test_reentry_locks_until_teacher_approves(app):
+    teacher, student, t, exam_id = _setup(app)
+    _managed(app, teacher, t, exam_id)
+    s = csrf(student, f"/student/exams/{exam_id}")
+    assert _sub(app)["violations"] == 0
+    page = student.get(f"/student/exams/{exam_id}").get_data(as_text=True)
+    assert "Waiting for your teacher" in page
+    assert _sub(app) | {"events": None} == {"status": "in_progress", "violations": 1, "locked": True,
+                                           "review": None, "cert": None, "events": None}
+    # Reloading again while locked is not counted twice.
+    student.get(f"/student/exams/{exam_id}")
+    assert student.post("/submissions/1/heartbeat", data={"csrf": s}).get_json()["locked"] is True
+    assert _sub(app)["violations"] == 1
+
+    live = teacher.get(f"/teacher/exams/{exam_id}/live.json").get_json()
+    assert live["attempts"][0]["locked"] and live["attempts"][0]["lock_reason"] == "reentry"
+    assert live["events"][0]["type"] == "reentry"
+
+    other = app.test_client()
+    login(other, "X", "x@x.edu", "teacher")
+    assert other.post("/teacher/submissions/1/approve", data={"csrf": csrf(other, "/teacher")}).status_code == 403
+    assert teacher.post("/teacher/submissions/1/approve", data={"csrf": t}).get_json()["locked"] is False
+    assert _sub(app)["events"] == [("reentry", True), ("reentry", False), ("approved", False)]
+
+
+def test_client_events_counted_logged_or_rejected(app):
+    teacher, student, t, exam_id = _setup(app)
+    _managed(app, teacher, t, exam_id, reentry_approval=None)
+    s = csrf(student, f"/student/exams/{exam_id}")
+    for kind in ("copy", "paste", "context_menu", "fullscreen_exit", "focus_lost"):
+        r = student.post("/submissions/1/events", data={"csrf": s, "type": kind})
+        assert r.get_json()["locked"] is False
+    assert student.post("/submissions/1/events", data={"csrf": s, "type": "made_up"}).status_code == 400
+    state = _sub(app)
+    assert state["violations"] == 2 and [c for _, c in state["events"]] == [False, False, False, True, True]
+
+    # Another student cannot report on this attempt.
+    other = app.test_client()
+    login(other, "O", "o@x.edu", "student")
+    assert other.post("/submissions/1/events", data={"csrf": csrf(other, "/student"), "type": "copy"}).status_code == 403
+
+
+def test_heartbeat_gap_is_a_violation(app):
+    from datetime import timedelta
+    teacher, student, t, exam_id = _setup(app)
+    _managed(app, teacher, t, exam_id)
+    s = csrf(student, f"/student/exams/{exam_id}")
+    assert student.post("/submissions/1/heartbeat", data={"csrf": s}).get_json()["locked"] is False
+    with app.app_context():
+        sub = Submission.query.one()
+        sub.last_seen_at -= timedelta(seconds=45)
+        db.session.commit()
+    assert student.post("/submissions/1/heartbeat", data={"csrf": s}).get_json()["locked"] is True
+    assert _sub(app)["events"] == [("heartbeat_gap", True)]
+
+
+def test_autosubmit_after_n_violations(app):
+    teacher, student, t, exam_id = _setup(app)
+    _managed(app, teacher, t, exam_id, reentry_approval=None, autosubmit="on", autosubmit_after="2")
+    s = csrf(student, f"/student/exams/{exam_id}")
+    assert student.post("/submissions/1/events", data={"csrf": s, "type": "focus_lost"}).get_json()["status"] == "in_progress"
+    state = student.post("/submissions/1/events", data={"csrf": s, "type": "fullscreen_exit"}).get_json()
+    assert state["status"] == "graded" and state["redirect"].endswith("/submissions/1")
+    assert _sub(app)["events"][-1] == ("auto_submitted", False)
+    # Late reports after the submit change nothing.
+    student.post("/submissions/1/events", data={"csrf": s, "type": "focus_lost"})
+    assert _sub(app)["violations"] == 2
+
+
+def test_force_submit(app):
+    teacher, student, t, exam_id = _setup(app)
+    _managed(app, teacher, t, exam_id)
+    student.get(f"/student/exams/{exam_id}")
+    assert teacher.post("/teacher/submissions/1/force-submit", data={"csrf": t}).get_json()["status"] == "graded"
+    assert _sub(app)["events"] == [("force_submitted", False)]
+
+
+def test_clean_managed_attempt_gets_certificate(app):
+    teacher, student, t, exam_id = _setup(app)
+    _managed(app, teacher, t, exam_id, withhold_if_flagged="on")
+    s = csrf(student, f"/student/exams/{exam_id}")
+    r = student.post(f"/student/exams/{exam_id}", data={"csrf": s, "q1": "0", "q2": "1"})
+    state = _sub(app)
+    assert state["review"] is None and state["cert"]
+    assert "2/2" in student.get(r.headers["Location"]).get_data(as_text=True)
+
+
+def test_flagged_attempt_is_withheld_then_released(app):
+    teacher, student, t, exam_id = _setup(app)
+    _managed(app, teacher, t, exam_id, reentry_approval=None, withhold_if_flagged="on")
+    s = csrf(student, f"/student/exams/{exam_id}")
+    student.post("/submissions/1/events", data={"csrf": s, "type": "focus_lost"})
+    student.post(f"/student/exams/{exam_id}", data={"csrf": s, "q1": "0", "q2": "1"})
+    state = _sub(app)
+    assert state["status"] == "graded" and state["review"] == "withheld" and state["cert"] is None
+
+    page = student.get("/submissions/1").get_data(as_text=True)
+    assert "under review" in page and "2/2" not in page
+    assert "Under review" in student.get("/student").get_data(as_text=True)
+    teacher_page = teacher.get("/submissions/1").get_data(as_text=True)
+    assert "2/2" in teacher_page and "Release" in teacher_page and "focus lost" in teacher_page
+    assert "Withheld" in teacher.get(f"/teacher/exams/{exam_id}/results").get_data(as_text=True)
+
+    teacher.post("/teacher/submissions/1/release", data={"csrf": t})
+    state = _sub(app)
+    assert state["review"] == "released" and state["cert"]
+    assert "2/2" in student.get("/submissions/1").get_data(as_text=True)
+    # Release only applies to withheld results.
+    assert teacher.post("/teacher/submissions/1/release", data={"csrf": t}).status_code == 409
+
+
+def test_withheld_attempt_can_be_cancelled(app, monkeypatch):
+    import grader_client
+    sent = []
+    monkeypatch.setattr(grader_client, "notify", sent.append)
+    teacher, student, t, exam_id = _setup(app)
+    _managed(app, teacher, t, exam_id, reentry_approval=None, withhold_if_flagged="on")
+    s = csrf(student, f"/student/exams/{exam_id}")
+    student.post("/submissions/1/events", data={"csrf": s, "type": "fullscreen_exit"})
+    student.post(f"/student/exams/{exam_id}", data={"csrf": s, "q1": "0"})
+    teacher.post("/teacher/submissions/1/cancel", data={"csrf": t})
+    assert _sub(app)["review"] == "cancelled" and sent[0]["kind"] == "cancelled"
+    assert sent[0]["student"]["email"] == "s@x.edu"
+    page = student.get("/submissions/1").get_data(as_text=True)
+    assert "Result cancelled" in page and "1/2" not in page
+    assert "Cancelled" in teacher.get(f"/teacher/exams/{exam_id}/results.csv").get_data(as_text=True) or \
+        "cancelled" in teacher.get(f"/teacher/exams/{exam_id}/results.csv").get_data(as_text=True)

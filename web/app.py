@@ -14,7 +14,7 @@ import grader_client
 from auth import bp as auth_bp
 from auth import login_required
 from config import Config
-from models import Exam, ExamVersion, Question, Submission, db, utcnow
+from models import DEFAULT_POLICY, AttemptEvent, Exam, ExamVersion, Question, Submission, db, utcnow
 
 LETTERS = "ABCDEFGH"
 
@@ -114,6 +114,10 @@ RESULT_FIELDS = ("score", "max_score", "percent", "passed", "details", "certific
 # A queued submission with no callback after this long can be re-sent by the student/teacher.
 STUCK_AFTER = timedelta(minutes=2)
 SUBMIT_GRACE = timedelta(seconds=30)
+# Managed mode: the page pings every few seconds; a longer silence (tab killed, network down, JS off) is a violation.
+HEARTBEAT_GAP = timedelta(seconds=30)
+# Events the exam page may report: type -> counts as a violation (and locks the attempt).
+CLIENT_EVENTS = {"fullscreen_exit": True, "focus_lost": True, "copy": False, "paste": False, "context_menu": False}
 
 
 def _apply_result(sub, result):
@@ -132,11 +136,45 @@ def _claim(sub, **values):
     claimed = db.session.execute(
         update(Submission)
         .where(Submission.id == sub.id, Submission.status == "in_progress")
-        .values(status="pending", submitted_at=utcnow(), **values)
+        .values(status="pending", submitted_at=utcnow(), locked_at=None, **values)
     ).rowcount == 1
     db.session.commit()
     db.session.refresh(sub)
     return claimed
+
+
+def _log(sub, type, detail=None, counted=False):
+    db.session.add(AttemptEvent(submission_id=sub.id, type=type, detail=detail, counted=counted))
+
+
+def _record(app, sub, type, detail=None, violation=False):
+    """Log a managed-mode event. A violation is counted, may lock the attempt for re-entry approval and
+    may trigger auto-submit. Nothing is counted while the attempt is already locked or finished."""
+    policy = sub.version.settings
+    if not policy["managed"] or sub.status != "in_progress":
+        return
+    counted = violation and sub.locked_at is None
+    _log(sub, type, detail, counted)
+    if counted:
+        # Increment in SQL so concurrent reports from the same page are not lost.
+        values = {"violations": Submission.violations + 1}
+        if policy["reentry_approval"]:
+            values.update(locked_at=utcnow(), lock_reason=type)
+        db.session.execute(update(Submission).where(Submission.id == sub.id).values(**values))
+    db.session.commit()
+    db.session.refresh(sub)
+    limit = policy["autosubmit_after"]
+    if counted and limit and sub.violations >= limit and _claim(sub):
+        _log(sub, "auto_submitted", f"after {sub.violations} violations")
+        db.session.commit()
+        _grade_and_save(app, sub)
+
+
+def _attempt_state(sub):
+    state = {"status": sub.status, "locked": sub.locked_at is not None, "violations": sub.violations}
+    if sub.status != "in_progress":
+        state["redirect"] = url_for("submission_view", sub_id=sub.id)
+    return state
 
 
 def _finish_if_expired(app, sub):
@@ -154,12 +192,18 @@ def _grade_and_save(app, sub):
     until AWS calls back. Returns False if the grader could not be reached."""
     # grade against the version the student got, never the live exam
     exam, version = sub.exam, sub.version
+    policy = version.settings
+    withhold = (policy["managed"] and policy["withhold_if_flagged"] and sub.violations > 0
+                and sub.review not in ("released", "cancelled"))
+    if withhold:
+        sub.review = "withheld"
     payload = {
         "submission_id": sub.id,
         "student": {"name": sub.student.name, "email": sub.student.email},
         "exam": {"id": exam.id, "title": exam.title, "pass_percent": version.pass_percent},
         "questions": [{"id": q.id, "points": q.points, "correct": q.correct} for q in version.questions],
         "answers": sub.answers,
+        "issue_certificate": not withhold and sub.review != "cancelled",
     }
     try:
         if grader_client.is_async():
@@ -296,6 +340,23 @@ def register_routes(app):
         db.session.commit()
         return redirect(url_for("exam_manage", exam_id=exam.id))
 
+    @app.route("/teacher/exams/<int:exam_id>/settings", methods=["POST"])
+    @login_required("teacher")
+    def exam_settings(exam_id):
+        exam = _own_exam(exam_id)
+        f = request.form
+        exam.duration_minutes = max(1, f.get("duration_minutes", exam.duration_minutes, type=int))
+        exam.pass_percent = min(100, max(0, f.get("pass_percent", exam.pass_percent, type=float)))
+        policy = {k: k in f for k, v in DEFAULT_POLICY.items() if isinstance(v, bool)}
+        limit = f.get("autosubmit_after", type=int)
+        policy["autosubmit_after"] = max(1, limit) if "autosubmit" in f and limit else None
+        exam.policy = policy
+        if exam.versions:
+            exam.new_version(exam.current_version.question_ids)
+        db.session.commit()
+        flash("Settings saved.", "success")
+        return redirect(url_for("exam_manage", exam_id=exam.id))
+
     @app.route("/teacher/exams/<int:exam_id>/versions/<int:version_id>/restore", methods=["POST"])
     @login_required("teacher")
     def version_restore(exam_id, version_id):
@@ -343,13 +404,14 @@ def register_routes(app):
         _finish_expired(app, exam.submissions)
         buf = io.StringIO()
         w = csv.writer(buf)
-        w.writerow(["Full name", "Email", "Score", "Max score", "Percent", "Result", "Submitted at (UTC)", "Certificate ID"])
+        w.writerow(["Full name", "Email", "Score", "Max score", "Percent", "Result", "Submitted at (UTC)", "Certificate ID",
+                    "Violations", "Review"])
         for s in sorted(exam.submissions, key=lambda s: s.submitted_at):
             if s.status == "in_progress":
                 continue
             w.writerow([s.student.name, s.student.email, s.score, s.max_score, s.percent,
                         "Passed" if s.passed else "Failed", s.submitted_at.strftime("%Y-%m-%d %H:%M"),
-                        s.certificate_id or ""])
+                        s.certificate_id or "", s.violations, s.review or ""])
         # BOM so Excel opens Vietnamese text correctly.
         return Response("\ufeff" + buf.getvalue(), mimetype="text/csv",
                         headers={"Content-Disposition": f"attachment; filename=ket-qua-exam-{exam.id}.csv"})
@@ -390,10 +452,19 @@ def register_routes(app):
         if sub.status != "in_progress":
             return redirect(url_for("submission_view", sub_id=sub.id))
         if request.method == "GET":
+            policy = sub.version.settings
+            if policy["managed"]:
+                # Opening the exam page again (reload, new tab, other device) while in progress is a re-entry.
+                if sub.last_seen_at is not None:
+                    _record(app, sub, "reentry", request.user_agent.string[:300], violation=True)
+                    if sub.status != "in_progress":
+                        return redirect(url_for("submission_view", sub_id=sub.id))
+                sub.last_seen_at = utcnow()
+                db.session.commit()
             # render the server side time on the web
             remaining = max(0, int((sub.deadline - utcnow()).total_seconds()))
-            return render_template("take_exam.html", exam=exam, questions=sub.version.questions,
-                                   remaining=remaining)
+            return render_template("take_exam.html", exam=exam, sub=sub, policy=policy,
+                                   questions=sub.version.questions, remaining=remaining)
 
         answers = {str(q.id): [int(v) for v in request.form.getlist(f"q{q.id}") if v.isdigit()]
                    for q in sub.version.questions}
@@ -411,14 +482,14 @@ def register_routes(app):
         if sub.status == "in_progress" and g.user.id == sub.student_id:
             return redirect(url_for("take_exam", exam_id=sub.exam_id))
         cert_url = None
-        if sub.certificate_key:
+        if sub.certificate_key and not sub.result_hidden:
             try:
                 cert_url = grader_client.certificate_url(sub.certificate_key)
             except Exception:
                 app.logger.exception("presign failed")
         details = {d["question_id"]: d for d in (sub.details or [])}
         return render_template("submission.html", sub=sub, exam=sub.exam, questions=sub.version.questions,
-                               details=details, cert_url=cert_url,
+                               details=details, cert_url=cert_url, is_teacher=g.user.id == sub.exam.teacher_id,
                                stuck=_is_stuck(sub))
 
     @app.route("/submissions/<int:sub_id>/status")
@@ -428,6 +499,120 @@ def register_routes(app):
         if g.user.id not in (sub.student_id, sub.exam.teacher_id):
             abort(403)
         return jsonify(status=sub.status, stuck=_is_stuck(sub))
+
+    def _own_attempt(sub_id):
+        sub = db.get_or_404(Submission, sub_id)
+        if sub.student_id != g.user.id:
+            abort(403)
+        _finish_if_expired(app, sub)
+        return sub
+
+    @app.route("/submissions/<int:sub_id>/heartbeat", methods=["POST"])
+    @login_required("student")
+    def attempt_heartbeat(sub_id):
+        sub = _own_attempt(sub_id)
+        if sub.status == "in_progress" and sub.version.settings["managed"]:
+            now = utcnow()
+            if sub.last_seen_at and now - sub.last_seen_at > HEARTBEAT_GAP:
+                gap = int((now - sub.last_seen_at).total_seconds())
+                _record(app, sub, "heartbeat_gap", f"no heartbeat for {gap}s", violation=True)
+            sub.last_seen_at = now
+            db.session.commit()
+        return jsonify(_attempt_state(sub))
+
+    @app.route("/submissions/<int:sub_id>/events", methods=["POST"])
+    @login_required("student")
+    def attempt_event(sub_id):
+        sub = _own_attempt(sub_id)
+        kind = request.form.get("type", "")
+        if kind not in CLIENT_EVENTS:
+            abort(400)
+        _record(app, sub, kind, request.form.get("detail", "")[:300] or None, violation=CLIENT_EVENTS[kind])
+        return jsonify(_attempt_state(sub))
+
+    # ---------- Teacher: managed-mode controls ----------
+    def _teacher_attempt(sub_id):
+        sub = db.get_or_404(Submission, sub_id)
+        if sub.exam.teacher_id != g.user.id:
+            abort(403)
+        return sub
+
+    @app.route("/teacher/exams/<int:exam_id>/live.json")
+    @login_required("teacher")
+    def exam_live(exam_id):
+        exam = _own_exam(exam_id)
+        _finish_expired(app, exam.submissions)
+        now = utcnow()
+        version_no = {v.id: i + 1 for i, v in enumerate(exam.versions)}
+        attempts = [{
+            "id": s.id, "name": s.student.name, "email": s.student.email, "version": version_no.get(s.version_id),
+            "managed": s.version.settings["managed"], "violations": s.violations,
+            "locked": s.locked_at is not None, "lock_reason": s.lock_reason,
+            "seen_ago": int((now - s.last_seen_at).total_seconds()) if s.last_seen_at else None,
+            "remaining": max(0, int((s.deadline - now).total_seconds())),
+        } for s in exam.submissions if s.status == "in_progress"]
+        sub_ids = [s.id for s in exam.submissions]
+        events = (AttemptEvent.query.filter(AttemptEvent.submission_id.in_(sub_ids))
+                  .order_by(AttemptEvent.id.desc()).limit(30).all()) if sub_ids else []
+        return jsonify(attempts=attempts, events=[{
+            "student": e.submission.student.name, "type": e.type, "detail": e.detail, "counted": e.counted,
+            "at": e.at.strftime("%H:%M:%S")} for e in events])
+
+    @app.route("/teacher/submissions/<int:sub_id>/approve", methods=["POST"])
+    @login_required("teacher")
+    def attempt_approve(sub_id):
+        sub = _teacher_attempt(sub_id)
+        if sub.status == "in_progress" and sub.locked_at:
+            sub.locked_at = None
+            # The student was waiting, not gone: do not count that silence as a heartbeat gap.
+            sub.last_seen_at = utcnow()
+            _log(sub, "approved", f"by {g.user.name}")
+            db.session.commit()
+        return jsonify(_attempt_state(sub))
+
+    @app.route("/teacher/submissions/<int:sub_id>/force-submit", methods=["POST"])
+    @login_required("teacher")
+    def attempt_force_submit(sub_id):
+        sub = _teacher_attempt(sub_id)
+        if _claim(sub):
+            _log(sub, "force_submitted", f"by {g.user.name}")
+            db.session.commit()
+            _grade_and_save(app, sub)
+        return jsonify(_attempt_state(sub))
+
+    @app.route("/teacher/submissions/<int:sub_id>/release", methods=["POST"])
+    @login_required("teacher")
+    def attempt_release(sub_id):
+        sub = _teacher_attempt(sub_id)
+        if sub.review != "withheld":
+            abort(409)
+        sub.review = "released"
+        _log(sub, "released", f"by {g.user.name}")
+        db.session.commit()
+        # Grading again issues the certificate and the normal result email; the pinned version keeps the score.
+        if not _grade_and_save(app, sub):
+            flash("Released, but issuing the certificate failed. Use 'Regrade' to retry.", "danger")
+        else:
+            flash("Result released to the student.", "success")
+        return redirect(url_for("submission_view", sub_id=sub.id))
+
+    @app.route("/teacher/submissions/<int:sub_id>/cancel", methods=["POST"])
+    @login_required("teacher")
+    def attempt_cancel(sub_id):
+        sub = _teacher_attempt(sub_id)
+        if sub.review != "withheld":
+            abort(409)
+        sub.review = "cancelled"
+        _log(sub, "cancelled", f"by {g.user.name}")
+        db.session.commit()
+        try:
+            grader_client.notify({"kind": "cancelled", "submission_id": sub.id,
+                                  "student": {"name": sub.student.name, "email": sub.student.email},
+                                  "exam": {"id": sub.exam.id, "title": sub.exam.title}})
+        except Exception:
+            app.logger.exception("cancel notification failed for submission %s", sub.id)
+        flash("Certificate cancelled; the student has been notified.", "success")
+        return redirect(url_for("submission_view", sub_id=sub.id))
 
     @app.route("/api/grader/callback", methods=["POST"])
     def grader_callback():

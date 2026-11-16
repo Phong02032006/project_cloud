@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Exams{% endblock %}
 {% block content %}
-{% set done = mine.values()|selectattr('status', 'equalto', 'graded')|list %}
+{% set done = mine.values()|selectattr('status', 'equalto', 'graded')|rejectattr('result_hidden')|list %}
 <div class="qc-page-head">
   <div>
     <div class="qc-section-title">Student space</div>
@@ -22,7 +22,9 @@
     <div class="col-md-6 col-lg-4">
       <div class="qc-card qc-card-hover p-4 h-100 d-flex flex-column">
         <div class="d-flex justify-content-between mb-2">
-          {% if s and s.status == 'graded' %}
+          {% if s and s.review == 'withheld' %}<span class="qc-chip warning"><i class="bi bi-hourglass-split"></i> Under review</span>
+          {% elif s and s.review == 'cancelled' %}<span class="qc-chip danger"><i class="bi bi-x-octagon"></i> Cancelled</span>
+          {% elif s and s.status == 'graded' %}
             {% if s.passed %}<span class="qc-chip success"><i class="bi bi-patch-check-fill"></i> Passed · {{ s.percent|num }}%</span>
             {% else %}<span class="qc-chip danger">Failed · {{ s.percent|num }}%</span>{% endif %}
           {% elif s and s.status == 'in_progress' %}<span class="qc-chip info"><i class="bi bi-stopwatch"></i> In progress</span>
@@ -36,6 +38,7 @@
           <span><i class="bi bi-list-ol text-primary"></i> {{ e.questions|length|plural("question") }}</span>
           <span><i class="bi bi-clock text-primary"></i> {{ e.duration_minutes }} min</span>
           <span><i class="bi bi-trophy text-primary"></i> ≥ {{ e.pass_percent|num }}%</span>
+          {% if e.settings.managed %}<span><i class="bi bi-shield-lock text-primary"></i> Managed</span>{% endif %}
         </div>
         {% if s and s.status == 'in_progress' %}
           <a href="{{ url_for('take_exam', exam_id=e.id) }}" class="btn btn-primary"><i class="bi bi-play-fill"></i> Continue exam</a>

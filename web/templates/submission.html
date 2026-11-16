@@ -5,7 +5,52 @@
 <h2 class="mt-1">{{ exam.title }}</h2>
 <div class="text-secondary mb-4"><i class="bi bi-person"></i> {{ sub.student.name }} · <i class="bi bi-calendar3"></i> {{ sub.submitted_at.strftime('%b %d, %Y %H:%M') }} (UTC)</div>
 
-{% if sub.status == 'graded' %}
+{% if is_teacher and (sub.review or sub.events) %}
+<div class="qc-card p-4 mb-4">
+  <div class="d-flex flex-wrap align-items-center gap-2 mb-3">
+    <h5 class="m-0 flex-grow-1"><i class="bi bi-shield-lock text-primary"></i> Integrity</h5>
+    {% if sub.violations %}<span class="qc-chip danger"><i class="bi bi-flag-fill"></i> {{ sub.violations|plural("violation") }}</span>
+    {% else %}<span class="qc-chip success"><i class="bi bi-shield-check"></i> Clean</span>{% endif %}
+    {% if sub.review %}<span class="qc-chip {{ 'warning' if sub.review == 'withheld' else 'muted' }}">{{ sub.review|capitalize }}</span>{% endif %}
+  </div>
+  {% if sub.review == 'withheld' and sub.status == 'graded' %}
+  <div class="alert alert-warning d-flex flex-wrap align-items-center gap-2">
+    <div class="flex-grow-1">The score and certificate are hidden from the student until you decide.</div>
+    <form method="post" action="{{ url_for('attempt_release', sub_id=sub.id) }}" class="m-0" onsubmit="return confirm('Release the result and issue the certificate?')">
+      <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+      <button class="btn btn-primary btn-sm"><i class="bi bi-unlock"></i> Release</button>
+    </form>
+    <form method="post" action="{{ url_for('attempt_cancel', sub_id=sub.id) }}" class="m-0" onsubmit="return confirm('Cancel the certificate? The student will be emailed.')">
+      <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+      <button class="btn btn-ghost text-danger btn-sm"><i class="bi bi-x-octagon"></i> Cancel certificate</button>
+    </form>
+  </div>
+  {% endif %}
+  <div class="small">
+    {% for e in sub.events %}
+      <div class="py-1 border-bottom {{ 'text-danger' if e.counted else 'text-secondary' }}">
+        <span class="text-secondary">{{ e.at.strftime('%H:%M:%S') }}</span> · <b>{{ e.type|replace('_', ' ') }}</b>{% if e.detail %} · {{ e.detail }}{% endif %}{% if e.counted %} · counted{% endif %}
+      </div>
+    {% else %}
+      <div class="text-secondary">No events recorded.</div>
+    {% endfor %}
+  </div>
+</div>
+{% endif %}
+
+{% if sub.result_hidden and not is_teacher %}
+  <div class="qc-card qc-empty p-5">
+    {% if sub.review == 'withheld' %}
+      <i class="bi bi-hourglass-split"></i>
+      <h4>Your result is under review</h4>
+      <p class="text-secondary mb-0">Activity during this managed exam was flagged. Your teacher will review it; you will get an email when your result is available.</p>
+    {% else %}
+      <i class="bi bi-x-octagon"></i>
+      <h4>Result cancelled</h4>
+      <p class="text-secondary mb-0">After review, your teacher cancelled the result and certificate for this exam.</p>
+    {% endif %}
+  </div>
+{% elif sub.status == 'graded' %}
   {% set correct_count = details.values()|selectattr('is_correct')|list|length %}
   <div class="qc-card p-4 p-md-5 mb-4">
     <div class="row align-items-center g-4">

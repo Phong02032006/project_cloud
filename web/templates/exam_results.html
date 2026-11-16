@@ -27,10 +27,24 @@
 </div>
 {% endif %}
 
+<div class="qc-card p-4 mb-4" id="live" data-url="{{ url_for('exam_live', exam_id=exam.id) }}">
+  <div class="d-flex align-items-center gap-2 mb-3">
+    <h5 class="m-0"><i class="bi bi-broadcast text-danger"></i> Live</h5>
+    <span class="small text-secondary">Attempts in progress, refreshed every 3 seconds</span>
+  </div>
+  <div class="row g-4">
+    <div class="col-lg-7"><div id="live-attempts" class="small text-secondary">Loading...</div></div>
+    <div class="col-lg-5">
+      <div class="small fw-semibold mb-2">Recent activity</div>
+      <div id="live-events" class="small" style="max-height:260px;overflow:auto"></div>
+    </div>
+  </div>
+</div>
+
 <div class="qc-card overflow-hidden">
   <div class="table-responsive">
   <table class="table qc-table">
-    <thead><tr><th>Student</th><th>Score</th><th style="width:22%">Percent</th><th>Result</th><th>Submitted (UTC)</th><th></th></tr></thead>
+    <thead><tr><th>Student</th><th>Score</th><th style="width:22%">Percent</th><th>Result</th><th>Integrity</th><th>Submitted (UTC)</th><th></th></tr></thead>
     <tbody>
     {% for s in submissions %}
       <tr>
@@ -43,14 +57,60 @@
         {% else %}
           <td colspan="3"><span class="qc-chip warning"><i class="bi bi-exclamation-triangle"></i> {{ 'Grading error' if s.status == 'error' else 'In progress' if s.status == 'in_progress' else 'Grading...' }}</span></td>
         {% endif %}
+        <td>
+          {% if s.violations %}<span class="qc-chip danger"><i class="bi bi-flag-fill"></i> {{ s.violations|plural("violation") }}</span>
+          {% elif s.version.settings.managed %}<span class="qc-chip success"><i class="bi bi-shield-check"></i> Clean</span>{% endif %}
+          {% if s.review %}<span class="qc-chip {{ 'warning' if s.review == 'withheld' else 'muted' }}">{{ s.review|capitalize }}</span>{% endif %}
+        </td>
         <td class="small text-secondary">{{ s.submitted_at.strftime('%b %d, %Y %H:%M') }}</td>
         <td class="text-end"><a href="{{ url_for('submission_view', sub_id=s.id) }}" class="btn btn-sm btn-ghost">Details <i class="bi bi-chevron-right"></i></a></td>
       </tr>
     {% else %}
-      <tr><td colspan="6"><div class="qc-empty"><i class="bi bi-inbox"></i>No submissions yet.</div></td></tr>
+      <tr><td colspan="7"><div class="qc-empty"><i class="bi bi-inbox"></i>No submissions yet.</div></td></tr>
     {% endfor %}
     </tbody>
   </table>
   </div>
 </div>
+{% endblock %}
+{% block scripts %}
+<script>
+  (() => {
+    const live = document.getElementById("live"), csrf = "{{ csrf_token() }}";
+    const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
+    const mmss = s => `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
+    const LABELS = {fullscreen_exit: "left fullscreen", focus_lost: "switched away", reentry: "reopened the exam",
+                    heartbeat_gap: "went silent", copy: "tried to copy", paste: "tried to paste",
+                    context_menu: "opened the right-click menu", approved: "was let back in",
+                    auto_submitted: "was auto-submitted", force_submitted: "was force-submitted",
+                    released: "result released", cancelled: "certificate cancelled"};
+    let ids = null;
+
+    window.qcAct = (id, action) => {
+      const body = new FormData(); body.append("csrf", csrf);
+      fetch(`/teacher/submissions/${id}/${action}`, {method: "POST", body}).then(refresh);
+    };
+
+    const refresh = () => fetch(live.dataset.url, {cache: "no-store"}).then(r => r.json()).then(d => {
+      // Attempts started or finished: reload so the results table below is current.
+      const now = d.attempts.map(a => a.id).sort().join();
+      if (ids !== null && ids !== now) return location.reload();
+      ids = now;
+      document.getElementById("live-attempts").innerHTML = d.attempts.length ? d.attempts.map(a => `
+        <div class="d-flex flex-wrap align-items-center gap-2 py-2 border-bottom">
+          <div class="flex-grow-1"><div class="fw-semibold text-body">${esc(a.name)}
+              ${a.managed ? "" : '<span class="qc-chip muted">not managed</span>'}</div>
+            <div>v${a.version} · ${mmss(a.remaining)} left${a.seen_ago != null && a.seen_ago > 15 ? ` · <span class="text-danger">silent ${a.seen_ago}s</span>` : ""}</div></div>
+          ${a.violations ? `<span class="qc-chip danger">${a.violations} violation${a.violations === 1 ? "" : "s"}</span>` : ""}
+          ${a.locked ? `<span class="qc-chip warning">waiting: ${esc(LABELS[a.lock_reason] || a.lock_reason)}</span>
+                        <button class="btn btn-sm btn-primary" onclick="qcAct(${a.id}, 'approve')">Approve</button>` : ""}
+          <button class="btn btn-sm btn-ghost text-danger" onclick="if (confirm('Submit this attempt now?')) qcAct(${a.id}, 'force-submit')">Force submit</button>
+        </div>`).join("") : "No attempts in progress.";
+      document.getElementById("live-events").innerHTML = d.events.map(e => `
+        <div class="py-1 ${e.counted ? "text-danger" : "text-secondary"}">${e.at} · <b>${esc(e.student)}</b> ${esc(LABELS[e.type] || e.type)}
+          ${e.detail ? `<span class="text-secondary">(${esc(e.detail)})</span>` : ""}</div>`).join("") || '<div class="text-secondary">No activity yet.</div>';
+    }).catch(() => {});
+    refresh(); setInterval(refresh, 3000);
+  })();
+</script>
 {% endblock %}

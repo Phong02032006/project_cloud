@@ -12,6 +12,38 @@
   <span class="qc-timer" id="timer-box"><i class="bi bi-stopwatch"></i> <span id="timer"></span></span>
 </div>
 
+{% if policy.managed %}
+<div class="qc-mm-overlay" id="mm-start" hidden>
+  <div class="qc-card p-5 text-center" style="max-width:520px">
+    <i class="bi bi-shield-lock fs-1 text-primary"></i>
+    <h3 class="mt-2">Managed exam</h3>
+    <p class="text-secondary">Your activity is monitored. Leaving {{ 'fullscreen, ' if policy.fullscreen }}switching away for more than 5 seconds or reopening this page counts as a violation{{ ' and needs your teacher\'s approval to continue' if policy.reentry_approval }}.</p>
+    {% if policy.autosubmit_after %}<p class="small text-danger">The exam is submitted automatically after {{ policy.autosubmit_after|plural("violation") }}.</p>{% endif %}
+    <button class="btn btn-primary btn-lg" id="mm-start-btn"><i class="bi bi-play-fill"></i> {{ 'Enter fullscreen and start' if policy.fullscreen else 'Start' }}</button>
+  </div>
+</div>
+<div class="qc-mm-overlay" id="mm-locked" hidden>
+  <div class="qc-card p-5 text-center" style="max-width:520px">
+    <div class="spinner-border text-warning mb-3" role="status"></div>
+    <h3>Waiting for your teacher</h3>
+    <p class="text-secondary mb-0">A violation was recorded. Your teacher must approve before you can continue. The timer keeps running.</p>
+  </div>
+</div>
+<div class="qc-mm-overlay" id="mm-resume" hidden>
+  <div class="qc-card p-5 text-center" style="max-width:520px">
+    <i class="bi bi-fullscreen fs-1 text-primary"></i>
+    <h3 class="mt-2">Return to fullscreen</h3>
+    <p class="text-secondary">This exam must be taken in fullscreen.</p>
+    <button class="btn btn-primary btn-lg" id="mm-resume-btn"><i class="bi bi-arrows-fullscreen"></i> Continue in fullscreen</button>
+  </div>
+</div>
+<style>
+  .qc-mm-overlay { position: fixed; inset: 0; z-index: 2000; display: flex; align-items: center; justify-content: center;
+                   padding: 16px; background: var(--bs-body-bg, #fff); }
+  .qc-mm-overlay[hidden] { display: none; }
+</style>
+{% endif %}
+
 <form method="post" id="exam-form">
   <input type="hidden" name="csrf" value="{{ csrf_token() }}">
   <div class="row g-4">
@@ -66,8 +98,82 @@
     const m = String(Math.floor(remaining / 60)).padStart(2, "0"), s = String(remaining % 60).padStart(2, "0");
     el.textContent = `${m}:${s}`;
     box.classList.toggle("low", remaining <= 60);
-    if (remaining-- <= 0) { clearInterval(t); document.getElementById("exam-form").submit(); }
+    if (remaining-- <= 0) { clearInterval(t); window.qcSubmitting = true; document.getElementById("exam-form").submit(); }
   };
   const t = setInterval(tick, 1000); tick();
+  document.getElementById("exam-form").addEventListener("submit", () => { window.qcSubmitting = true; });
 </script>
+{% if policy.managed %}
+<script>
+  (() => {
+    const P = {{ policy|tojson }}, csrf = document.querySelector("#exam-form input[name=csrf]").value;
+    const urls = {beat: "{{ url_for('attempt_heartbeat', sub_id=sub.id) }}", event: "{{ url_for('attempt_event', sub_id=sub.id) }}"};
+    const show = id => ["mm-start", "mm-locked", "mm-resume"].forEach(o => document.getElementById(o).hidden = o !== id);
+    let started = false, locked = {{ 'true' if sub.locked_at else 'false' }};
+
+    const apply = st => {
+      if (st.status !== "in_progress") { window.qcSubmitting = true; location.href = st.redirect; return; }
+      locked = st.locked;
+      if (locked) show("mm-locked");
+      else if (!started) show("mm-start");
+      else if (P.fullscreen && !document.fullscreenElement) show("mm-resume");
+      else show(null);
+    };
+    const post = (url, data = {}) => {
+      const body = new FormData();
+      body.append("csrf", csrf);
+      Object.entries(data).forEach(([k, v]) => body.append(k, v));
+      return fetch(url, {method: "POST", body}).then(r => r.ok ? r.json() : null).then(st => st && apply(st)).catch(() => {});
+    };
+    const report = (type, detail = "") => { if (!window.qcSubmitting) post(urls.event, {type, detail}); };
+
+    const enter = () => {
+      const go = () => { started = true; apply({status: "in_progress", locked}); };
+      if (P.fullscreen) document.documentElement.requestFullscreen().then(go).catch(go);
+      else go();
+    };
+    document.getElementById("mm-start-btn").addEventListener("click", enter);
+    document.getElementById("mm-resume-btn").addEventListener("click", enter);
+
+    document.addEventListener("fullscreenchange", () => {
+      if (P.fullscreen && started && !document.fullscreenElement && !window.qcSubmitting) {
+        report("fullscreen_exit");
+        if (!locked) show("mm-resume");
+      }
+    });
+
+    // Focus loss only counts when it lasts more than 5 seconds.
+    let awayAt = null, awayTimer = null, awayReported = false;
+    const away = () => {
+      if (awayAt || !started) return;
+      awayAt = Date.now(); awayReported = false;
+      awayTimer = setTimeout(() => { awayReported = true; report("focus_lost", "more than 5s"); }, 5000);
+    };
+    const back = () => {
+      if (!awayAt) return;
+      clearTimeout(awayTimer);
+      const secs = Math.round((Date.now() - awayAt) / 1000);
+      if (!awayReported && secs >= 5) report("focus_lost", `${secs}s`);
+      awayAt = null;
+    };
+    window.addEventListener("blur", away);
+    window.addEventListener("focus", back);
+    document.addEventListener("visibilitychange", () => document.hidden ? away() : back());
+
+    let lastBlocked = 0;
+    const block = (allowed, type) => e => {
+      if (allowed) return;
+      e.preventDefault();
+      if (Date.now() - lastBlocked > 2000) { lastBlocked = Date.now(); report(type); }
+    };
+    document.addEventListener("copy", block(P.allow_copy, "copy"));
+    document.addEventListener("cut", block(P.allow_copy, "copy"));
+    document.addEventListener("paste", block(P.allow_paste, "paste"));
+    document.addEventListener("contextmenu", block(P.allow_context_menu, "context_menu"));
+
+    setInterval(() => post(urls.beat), 5000);
+    apply({status: "in_progress", locked});
+  })();
+</script>
+{% endif %}
 {% endblock %}

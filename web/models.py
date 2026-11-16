@@ -9,6 +9,19 @@ def utcnow():
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
+# Managed-mode settings. Violations are always logged when managed is on; the rest are opt-in actions.
+DEFAULT_POLICY = {
+    "managed": False,
+    "fullscreen": True,
+    "reentry_approval": True,
+    "withhold_if_flagged": False,
+    "autosubmit_after": None,  # int N, or None for no auto-submit
+    "allow_copy": False,
+    "allow_paste": False,
+    "allow_context_menu": False,
+}
+
+
 class User(db.Model):
     __tablename__ = "users"
     id = db.Column(db.Integer, primary_key=True)
@@ -28,6 +41,7 @@ class Exam(db.Model):
     duration_minutes = db.Column(db.Integer, default=15)
     pass_percent = db.Column(db.Float, default=50)
     published = db.Column(db.Boolean, default=False, nullable=False)
+    policy = db.Column(db.JSON)
     teacher_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)
     created_at = db.Column(db.DateTime, default=utcnow)
 
@@ -55,9 +69,13 @@ class Exam(db.Model):
         return sum(q.points for q in self.questions)
 
     # the only way to change the question set: snapshot a new version and move the ptr to it
+    @property
+    def settings(self):
+        return {**DEFAULT_POLICY, **(self.policy or {})}
+
     def new_version(self, question_ids):
         version = ExamVersion(exam=self, question_ids=list(question_ids), pass_percent=self.pass_percent,
-                              duration_minutes=self.duration_minutes)
+                              duration_minutes=self.duration_minutes, policy=self.settings)
         db.session.add(version)
         self.current_version = version
         return version
@@ -73,7 +91,12 @@ class ExamVersion(db.Model):
     # copied from the exam at snapshot time since they affect grading / the deadline
     pass_percent = db.Column(db.Float, nullable=False)
     duration_minutes = db.Column(db.Integer, nullable=False)
+    policy = db.Column(db.JSON)
     created_at = db.Column(db.DateTime, default=utcnow)
+
+    @property
+    def settings(self):
+        return {**DEFAULT_POLICY, **(self.policy or {})}
 
     # one IN query, then reorder by question_ids since IN gives no order guarantee
     @property
@@ -118,10 +141,34 @@ class Submission(db.Model):
     status = db.Column(db.String(20), default="pending")  # in_progress | pending | graded | error
     started_at = db.Column(db.DateTime, default=utcnow, nullable=False)
     submitted_at = db.Column(db.DateTime, default=utcnow)
+    # Managed mode: last heartbeat, pending re-entry approval, counted violations.
+    last_seen_at = db.Column(db.DateTime)
+    locked_at = db.Column(db.DateTime)
+    lock_reason = db.Column(db.String(30))
+    violations = db.Column(db.Integer, default=0, nullable=False)
+    review = db.Column(db.String(20))  # None | withheld | released | cancelled
 
     student = db.relationship("User")
     version = db.relationship("ExamVersion")
+    events = db.relationship("AttemptEvent", backref="submission", cascade="all, delete-orphan",
+                             order_by="AttemptEvent.id")
+
+    @property
+    def result_hidden(self):
+        """Withheld or cancelled results are visible to the teacher only."""
+        return self.review in ("withheld", "cancelled")
 
     @property
     def deadline(self):
         return self.started_at + timedelta(minutes=self.version.duration_minutes)
+
+
+class AttemptEvent(db.Model):
+    """Append-only managed-mode log; `at` is always server time."""
+    __tablename__ = "attempt_events"
+    id = db.Column(db.Integer, primary_key=True)
+    submission_id = db.Column(db.Integer, db.ForeignKey("submissions.id"), nullable=False, index=True)
+    type = db.Column(db.String(30), nullable=False)
+    detail = db.Column(db.Unicode(300))
+    counted = db.Column(db.Boolean, default=False, nullable=False)
+    at = db.Column(db.DateTime, default=utcnow, nullable=False)

@@ -12,6 +12,7 @@
       <span class="qc-chip"><i class="bi bi-star"></i> {{ exam.max_score|num }} points</span>
       <span class="qc-chip"><i class="bi bi-clock"></i> {{ exam.duration_minutes }} min</span>
       <span class="qc-chip"><i class="bi bi-trophy"></i> Pass at {{ exam.pass_percent|num }}%</span>
+      {% if exam.settings.managed %}<span class="qc-chip info"><i class="bi bi-shield-lock"></i> Managed</span>{% endif %}
     </div>
   </div>
   <div class="d-flex gap-2">
@@ -100,6 +101,36 @@
         <button class="btn btn-soft w-100"><i class="bi bi-upload"></i> Import file</button>
       </form>
     </div>
+    {% set p = exam.settings %}
+    <div class="qc-card p-4 mb-4">
+      <h5 class="mb-3"><i class="bi bi-sliders text-primary"></i> Settings</h5>
+      <form method="post" action="{{ url_for('exam_settings', exam_id=exam.id) }}" class="js-edit" id="settings-form">
+        <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+        <div class="row g-3 mb-3">
+          <div class="col-6"><label class="form-label small">Time limit (minutes)</label><input name="duration_minutes" type="number" min="1" value="{{ exam.duration_minutes }}" class="form-control"></div>
+          <div class="col-6"><label class="form-label small">Pass mark (%)</label><input name="pass_percent" type="number" min="0" max="100" value="{{ exam.pass_percent|num }}" class="form-control"></div>
+        </div>
+        <div class="form-check form-switch mb-2">
+          <input class="form-check-input" type="checkbox" name="managed" id="managed" {{ 'checked' if p.managed }}>
+          <label class="form-check-label fw-semibold" for="managed"><i class="bi bi-shield-lock"></i> Managed mode</label>
+        </div>
+        <div id="managed-options" class="ps-3 border-start mb-2" {{ '' if p.managed else 'hidden' }}>
+          <p class="small text-secondary mb-2">Every violation is logged and shown on the results page. Violations: leaving fullscreen, losing focus for more than 5 seconds, reopening the exam page, and the page going silent for more than 30 seconds.</p>
+          <div class="form-check mb-1"><input class="form-check-input" type="checkbox" name="fullscreen" id="fullscreen" {{ 'checked' if p.fullscreen }}><label class="form-check-label" for="fullscreen">Require fullscreen</label></div>
+          <div class="form-check mb-1"><input class="form-check-input" type="checkbox" name="reentry_approval" id="reentry_approval" {{ 'checked' if p.reentry_approval }}><label class="form-check-label" for="reentry_approval">Require my approval to continue after a violation</label></div>
+          <div class="alert alert-warning small py-2 mb-2" id="reentry-warning" {{ 'hidden' if p.reentry_approval }}><i class="bi bi-exclamation-triangle"></i> Without approval, a student who leaves the exam can come straight back. Violations are still logged and counted.</div>
+          <div class="small fw-semibold mt-2 mb-1">On violation (both can be combined)</div>
+          <div class="form-check mb-1"><input class="form-check-input" type="checkbox" name="withhold_if_flagged" id="withhold_if_flagged" {{ 'checked' if p.withhold_if_flagged }}><label class="form-check-label" for="withhold_if_flagged">Withhold score and certificate until I review</label></div>
+          <div class="form-check mb-2 d-flex align-items-center gap-2"><input class="form-check-input" type="checkbox" name="autosubmit" id="autosubmit" {{ 'checked' if p.autosubmit_after }}><label class="form-check-label" for="autosubmit">Auto-submit after</label>
+            <input name="autosubmit_after" type="number" min="1" value="{{ p.autosubmit_after or 3 }}" class="form-control form-control-sm" style="width:5rem"><span class="small">violations</span></div>
+          <div class="small fw-semibold mt-2 mb-1">Allow during the exam</div>
+          <div class="form-check form-check-inline"><input class="form-check-input" type="checkbox" name="allow_copy" id="allow_copy" {{ 'checked' if p.allow_copy }}><label class="form-check-label" for="allow_copy">Copy</label></div>
+          <div class="form-check form-check-inline"><input class="form-check-input" type="checkbox" name="allow_paste" id="allow_paste" {{ 'checked' if p.allow_paste }}><label class="form-check-label" for="allow_paste">Paste</label></div>
+          <div class="form-check form-check-inline"><input class="form-check-input" type="checkbox" name="allow_context_menu" id="allow_context_menu" {{ 'checked' if p.allow_context_menu }}><label class="form-check-label" for="allow_context_menu">Right-click menu</label></div>
+        </div>
+        <button class="btn btn-soft w-100 mt-3"><i class="bi bi-check2"></i> Save settings</button>
+      </form>
+    </div>
     {% if exam.versions %}
     <div class="qc-card p-4">
       <h5 class="mb-1"><i class="bi bi-clock-history text-primary"></i> Versions</h5>
@@ -126,6 +157,9 @@
 {% endblock %}
 {% block scripts %}
 <script>
+  const managed = document.getElementById("managed"), reentry = document.getElementById("reentry_approval");
+  managed.addEventListener("change", () => document.getElementById("managed-options").hidden = !managed.checked);
+  reentry.addEventListener("change", () => document.getElementById("reentry-warning").hidden = reentry.checked);
   const impact = document.getElementById("edit-impact");
   if (impact) {
     document.querySelectorAll("form.js-edit").forEach(f => f.addEventListener("submit", e => {
