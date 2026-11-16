@@ -81,8 +81,23 @@ def _parse_correct(raw, n_options):
 
 
 def _counting(subs):
-    """The attempts that count: the selected attempt per student, once graded."""
-    return [s for s in subs if s.selected and s.status == "graded"]
+    """The attempts that count: the selected attempt per student, once graded and not voided."""
+    return [s for s in subs if s.selected and s.status == "graded" and s.review not in ("cancelled", "revoked")]
+
+
+# Preset revocation reasons: the label is shown publicly on /verify, the message goes only in the email.
+REVOKE_REASONS = {
+    "misconduct": ("Academic misconduct",
+                   "A review found that the exam was not completed in line with the exam rules. If you believe this "
+                   "is a mistake, please contact your teacher."),
+    "issued_in_error": ("Issued in error",
+                        "This certificate was issued by mistake. This is not a judgement on your work; your teacher "
+                        "will contact you about next steps."),
+    "identity": ("Identity could not be verified",
+                 "We could not confirm that you were the person who took this exam. Please contact your teacher to "
+                 "resolve this."),
+    "other": ("Other", ""),
+}
 
 
 def _exam_stats(exam):
@@ -704,6 +719,7 @@ def register_routes(app):
                 app.logger.exception("presign failed")
         details = {d["question_id"]: d for d in (sub.details or [])}
         return render_template("submission.html", sub=sub, exam=sub.exam, questions=sub.version.questions,
+                               revoke_reasons=REVOKE_REASONS,
                                details=details, cert_url=cert_url, is_teacher=g.user.id == sub.exam.teacher_id,
                                stuck=_is_stuck(sub))
 
@@ -886,6 +902,34 @@ def register_routes(app):
             flash("Released, but issuing the certificate failed. Use 'Regrade' to retry.", "danger")
         else:
             flash("Result released to the student.", "success")
+        return redirect(url_for("submission_view", sub_id=sub.id))
+
+    @app.route("/teacher/submissions/<int:sub_id>/revoke", methods=["POST"])
+    @login_required("teacher")
+    def certificate_revoke(sub_id):
+        sub = _teacher_attempt(sub_id)
+        cert = sub.certificate
+        preset = REVOKE_REASONS.get(request.form.get("reason", ""))
+        note = request.form.get("note", "").strip()[:300]
+        if cert is None or cert.status != "valid":
+            abort(409)
+        if preset is None or (request.form.get("reason") == "other" and not note):
+            flash("Choose a reason (and describe it when choosing 'Other').", "danger")
+            return redirect(url_for("submission_view", sub_id=sub.id))
+        label, message = preset
+        reason = note if request.form.get("reason") == "other" else label + (f": {note}" if note else "")
+        # Permanent, and the attempt is voided like a cancelled withheld result.
+        cert.status, cert.status_changed_at, cert.revoked_reason = "revoked", utcnow(), reason
+        sub.review = "revoked"
+        _log(sub, "revoked", f"by {g.user.name}: {reason}")
+        db.session.commit()
+        try:
+            grader_client.notify({"kind": "revoked", "reason": reason, "message": message,
+                                  "student": {"name": sub.student.name, "email": sub.student.email},
+                                  "exam": {"id": sub.exam.id, "title": sub.exam.title}})
+        except Exception:
+            app.logger.exception("revocation notice failed for submission %s", sub.id)
+        flash("Certificate revoked; the student has been notified.", "success")
         return redirect(url_for("submission_view", sub_id=sub.id))
 
     @app.route("/teacher/submissions/<int:sub_id>/cancel", methods=["POST"])

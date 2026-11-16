@@ -57,6 +57,9 @@ NOTICES = {
     "invalidated": ("Certificate invalidated: {title}",
                     "Hi {name},\n\nYou claimed a retake for \"{title}\", so your previous certificate for this exam "
                     "is no longer valid. Your new attempt has started.\n"),
+    "revoked": ("Certificate revoked: {title}",
+                "Hi {name},\n\nYour teacher revoked your certificate for \"{title}\".\n\nReason: {reason}\n\n"
+                "{message}\n"),
     "cancelled": ("Exam certificate cancelled: {title}",
                   "Hi {name},\n\nAfter review, your teacher cancelled the result and certificate for \"{title}\". "
                   "Please contact your teacher if you have questions.\n"),
@@ -88,9 +91,9 @@ def _send_email(to, student_name, exam_title, result, url):
     _send(to, f"Exam result: {exam_title}", text)
 
 
-def _send_notice(kind, student, exam_title):
+def _send_notice(kind, student, exam_title, extra=None):
     subject, text = NOTICES[kind]
-    fields = {"name": student["name"], "title": exam_title}
+    fields = {"reason": "", "message": "", **(extra or {}), "name": student["name"], "title": exam_title}
     _send(student.get("email"), subject.format(**fields), text.format(**fields))
 
 
@@ -179,7 +182,8 @@ def lambda_handler(event, context):
     if action == "notify":
         if payload.get("kind") not in NOTICES or "student" not in payload or "exam" not in payload:
             return _response(400, {"error": "bad notify payload"})
-        _send_notice(payload["kind"], payload["student"], payload["exam"]["title"])
+        _send_notice(payload["kind"], payload["student"], payload["exam"]["title"],
+                     {k: payload[k] for k in ("reason", "message") if k in payload})
         return _response(200, {"status": "sent"})
 
     if action == "submit":

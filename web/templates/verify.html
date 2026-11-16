@@ -25,6 +25,9 @@
             {% if cert.status not in ('valid', 'issuing') %}
             <dt class="col-sm-4">Status since</dt><dd class="col-sm-8">{{ cert.status_changed_at.strftime('%b %d, %Y') if cert.status_changed_at else '-' }}</dd>
             {% endif %}
+            {% if cert.status == 'revoked' and cert.revoked_reason %}
+            <dt class="col-sm-4">Reason</dt><dd class="col-sm-8">{{ cert.revoked_reason }}</dd>
+            {% endif %}
           </dl>
         </div>
       {% endif %}

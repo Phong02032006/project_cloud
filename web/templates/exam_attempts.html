@@ -44,7 +44,7 @@
         <td>
           {% if a.status == 'in_progress' %}<span class="qc-chip info">In progress</span>
           {% elif a.review == 'withheld' %}<span class="qc-chip warning">Under review</span>
-          {% elif a.review == 'cancelled' %}<span class="qc-chip danger">Cancelled</span>
+          {% elif a.review in ('cancelled', 'revoked') %}<span class="qc-chip danger">{{ a.review|capitalize }}</span>
           {% elif a.status == 'graded' %}<b>{{ a.score|num }}/{{ a.max_score|num }}</b> · {{ a.percent|num }}% {{ '· Passed' if a.passed else '· Failed' }}
           {% else %}<span class="qc-chip warning">Grading...</span>{% endif %}
         </td>

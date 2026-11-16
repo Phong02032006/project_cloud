@@ -221,3 +221,12 @@ def test_schedule_event_pokes_finalize(monkeypatch):
     monkeypatch.setenv("WEB_CALLBACK_URL", "https://quiz.example/api/grader/callback")
     assert handler.lambda_handler({"source": "aws.events", "detail-type": "Scheduled Event"}, None)["status"] == "ok"
     assert calls == ["https://quiz.example/api/cron/finalize"]
+
+
+def test_notify_revoked_includes_reason_and_message(aws):
+    _, ses = aws
+    handler.lambda_handler(_event({"action": "notify", "kind": "revoked", "reason": "Issued in error",
+                                   "message": "Not a judgement on your work.", "student": PAYLOAD["student"],
+                                   "exam": PAYLOAD["exam"]}), None)
+    body = ses.sent[0]["Message"]["Body"]["Text"]["Data"]
+    assert "Reason: Issued in error" in body and "Not a judgement on your work." in body

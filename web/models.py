@@ -152,7 +152,7 @@ class Submission(db.Model):
     locked_at = db.Column(db.DateTime)
     lock_reason = db.Column(db.String(30))
     violations = db.Column(db.Integer, default=0, nullable=False)
-    review = db.Column(db.String(20))  # None | withheld | released | cancelled
+    review = db.Column(db.String(20))  # None | withheld | released | cancelled | revoked
 
     student = db.relationship("User")
     version = db.relationship("ExamVersion")
@@ -162,8 +162,8 @@ class Submission(db.Model):
 
     @property
     def result_hidden(self):
-        """Withheld or cancelled results are visible to the teacher only."""
-        return self.review in ("withheld", "cancelled")
+        """Withheld, cancelled or revoked results are visible to the teacher only."""
+        return self.review in ("withheld", "cancelled", "revoked")
 
     @property
     def deadline(self):
@@ -194,6 +194,7 @@ class Certificate(db.Model):
     status = db.Column(db.String(20), default="issuing", nullable=False)  # issuing | valid | invalidated | revoked
     issued_at = db.Column(db.DateTime)
     status_changed_at = db.Column(db.DateTime)
+    revoked_reason = db.Column(db.Unicode(500))  # shown on the public verification page
 
     student = db.relationship("User")
 

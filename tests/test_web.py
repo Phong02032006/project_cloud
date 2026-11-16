@@ -851,3 +851,46 @@ def test_withdraw_retake(app):
     teacher.post("/teacher/tickets/1/withdraw", data={"csrf": t})
     with app.app_context():
         assert RetakeTicket.query.count() == 0
+
+
+def test_revoke_certificate(app, monkeypatch):
+    import grader_client
+    from models import Certificate
+    sent = []
+    monkeypatch.setattr(grader_client, "notify", sent.append)
+    teacher, student, t, exam_id = _setup(app)
+    _take(student, exam_id, {"q1": "0", "q2": "1"})
+    with app.app_context():
+        code = Certificate.query.one().code
+    assert "Revoke certificate" in teacher.get("/submissions/1").get_data(as_text=True)
+    assert "Revoke certificate" not in student.get("/submissions/1").get_data(as_text=True)
+
+    # 'Other' needs a description; students and other teachers cannot revoke.
+    teacher.post("/teacher/submissions/1/revoke", data={"csrf": t, "reason": "other"})
+    assert student.post("/teacher/submissions/1/revoke", data={"csrf": csrf(student, "/student"),
+                                                              "reason": "misconduct"}).status_code == 403
+    with app.app_context():
+        assert Certificate.query.one().status == "valid"
+
+    teacher.post("/teacher/submissions/1/revoke", data={"csrf": t, "reason": "misconduct", "note": "copied answers"})
+    with app.app_context():
+        cert = Certificate.query.one()
+        assert (cert.status, cert.revoked_reason) == ("revoked", "Academic misconduct: copied answers")
+        assert Submission.query.one().review == "revoked"
+        from app import _exam_stats
+        assert _exam_stats(db.session.get(Exam, exam_id)) is None
+    assert sent[0]["kind"] == "revoked" and sent[0]["reason"] == "Academic misconduct: copied answers"
+    assert "exam rules" in sent[0]["message"]
+
+    verify = app.test_client().get(f"/verify/{code}").get_data(as_text=True)
+    assert "Revoked" in verify and "copied answers" in verify and "exam rules" not in verify
+    page = student.get("/submissions/1").get_data(as_text=True)
+    assert "Certificate revoked" in page and "2/2" not in page and "Download" not in page
+    assert "Revoked" in student.get("/student").get_data(as_text=True)
+
+    # Permanent: no second revocation, and a retake does not turn it into "invalidated".
+    assert teacher.post("/teacher/submissions/1/revoke", data={"csrf": t, "reason": "misconduct"}).status_code == 409
+    _grant(teacher, t, exam_id)
+    student.post("/student/tickets/1/claim", data={"csrf": csrf(student, "/student")})
+    with app.app_context():
+        assert Certificate.query.one().status == "revoked"
