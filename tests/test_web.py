@@ -213,3 +213,196 @@ def test_async_stuck_submission_can_be_resent(app, monkeypatch):
     student.post(f"{sub_path}/regrade", data={"csrf": csrf(student, sub_path)})
     assert len(sent) == 2
     assert student.get(f"{sub_path}/status").get_json() == {"status": "pending", "stuck": False}
+
+
+def _setup(app, questions=(("Q1", ["a", "b"], ["0"]), ("Q2", ["a", "b"], ["1"])), duration="10"):
+    """A published exam plus logged-in teacher and student clients. Returns (teacher, student, csrf, exam_id)."""
+    teacher, student = app.test_client(), app.test_client()
+    login(teacher, "T", "t@x.edu", "teacher")
+    login(student, "S", "s@x.edu", "student")
+    t = csrf(teacher, "/teacher")
+    r = teacher.post("/teacher/exams/new", data={"csrf": t, "title": "E", "duration_minutes": duration})
+    exam_id = int(r.headers["Location"].split("/")[-1])
+    for text, options, correct in questions:
+        teacher.post(f"/teacher/exams/{exam_id}/questions", data={
+            "csrf": t, "text": text, "options": options, "correct": correct})
+    teacher.post(f"/teacher/exams/{exam_id}/publish", data={"csrf": t})
+    return teacher, student, t, exam_id
+
+
+def _shift_start(app, minutes, email="s@x.edu"):
+    from datetime import timedelta
+
+    from models import User
+    with app.app_context():
+        sub = Submission.query.join(User, Submission.student_id == User.id).filter(User.email == email).one()
+        sub.started_at -= timedelta(minutes=minutes)
+        db.session.commit()
+
+
+def _remaining(html):
+    return int(re.search(r"let remaining = (\d+);", html).group(1))
+
+
+def test_opening_exam_starts_server_clock(app):
+    _, student, _, exam_id = _setup(app)
+    first = _remaining(student.get(f"/student/exams/{exam_id}").get_data(as_text=True))
+    assert 595 <= first <= 600
+    with app.app_context():
+        sub = Submission.query.one()
+        assert sub.status == "in_progress" and sub.answers == {}
+
+    # Refreshing reuses the attempt, so the clock keeps running instead of restarting.
+    _shift_start(app, 4)
+    again = _remaining(student.get(f"/student/exams/{exam_id}").get_data(as_text=True))
+    assert 355 <= again <= 360
+    with app.app_context():
+        assert Submission.query.count() == 1
+
+    dashboard = student.get("/student").get_data(as_text=True)
+    assert "In progress" in dashboard and "Continue exam" in dashboard
+    # An unfinished attempt's result page sends the student back to the exam.
+    assert student.get("/submissions/1").headers["Location"].endswith(f"/student/exams/{exam_id}")
+
+
+def test_submit_within_grace_is_accepted(app):
+    _, student, _, exam_id = _setup(app)
+    s = csrf(student, f"/student/exams/{exam_id}")
+    # Exactly at the deadline, still inside the grace window.
+    _shift_start(app, 10)
+    r = student.post(f"/student/exams/{exam_id}", data={"csrf": s, "q1": "0", "q2": "1"})
+    assert "2/2" in student.get(r.headers["Location"]).get_data(as_text=True)
+
+
+def test_late_submit_is_scored_zero(app):
+    _, student, _, exam_id = _setup(app)
+    s = csrf(student, f"/student/exams/{exam_id}")
+    _shift_start(app, 60 * 5)
+    r = student.post(f"/student/exams/{exam_id}", data={"csrf": s, "q1": "0", "q2": "1"})
+    assert r.headers["Location"].endswith("/submissions/1")
+    with app.app_context():
+        sub = Submission.query.one()
+        assert (sub.status, sub.score, sub.answers) == ("graded", 0.0, {})
+
+
+def test_abandoned_attempt_expires_when_viewed(app):
+    teacher, student, _, exam_id = _setup(app)
+    student.get(f"/student/exams/{exam_id}")
+    _shift_start(app, 11)
+    assert "S" in teacher.get(f"/teacher/exams/{exam_id}/results").get_data(as_text=True)
+    with app.app_context():
+        sub = Submission.query.one()
+        assert (sub.status, sub.score) == ("graded", 0.0)
+
+
+def test_in_progress_attempts_left_out_of_csv(app):
+    teacher, student, _, exam_id = _setup(app)
+    student.get(f"/student/exams/{exam_id}")
+    assert "s@x.edu" not in teacher.get(f"/teacher/exams/{exam_id}/results.csv").get_data(as_text=True)
+
+
+def test_attempt_is_claimed_and_graded_once(app, monkeypatch):
+    import grader_client
+
+    from app import _claim
+    _, student, _, exam_id = _setup(app)
+    calls = []
+    real = grader_client.grade_submission
+    monkeypatch.setattr(grader_client, "grade_submission", lambda p: calls.append(p) or real(p))
+
+    s = csrf(student, f"/student/exams/{exam_id}")
+    student.post(f"/student/exams/{exam_id}", data={"csrf": s, "q1": "0", "q2": "1"})
+    # A second submit (e.g. another tab) loses the claim: no regrade, answers untouched.
+    student.post(f"/student/exams/{exam_id}", data={"csrf": s, "q1": "1"})
+    assert len(calls) == 1
+    with app.app_context():
+        sub = Submission.query.one()
+        assert sub.answers == {"1": [0], "2": [1]} and sub.score == 2
+        assert _claim(sub, answers={}) is False
+        assert Submission.query.one().answers == {"1": [0], "2": [1]}
+
+
+def test_attempt_pinned_to_version_through_edits(app, monkeypatch):
+    import grader_client
+
+    teacher, student, t, exam_id = _setup(app)
+    s = csrf(student, f"/student/exams/{exam_id}")
+
+    # Teacher edits mid-attempt: add a 5-point question, drop Q1.
+    teacher.post(f"/teacher/exams/{exam_id}/questions", data={
+        "csrf": t, "text": "NEW", "options": ["a", "b"], "correct": ["0"], "points": "5"})
+    teacher.post(f"/teacher/exams/{exam_id}/questions/1/delete", data={"csrf": t})
+    with app.app_context():
+        exam = db.session.get(Exam, exam_id)
+        assert [q.text for q in exam.questions] == ["Q2", "NEW"] and len(exam.versions) == 4
+
+    page = student.get(f"/student/exams/{exam_id}").get_data(as_text=True)
+    assert "Q1" in page and "NEW" not in page
+
+    # Fail the first grading so the regrade path runs after the edits too.
+    real = grader_client.grade_submission
+    monkeypatch.setattr(grader_client, "grade_submission", lambda p: (_ for _ in ()).throw(ConnectionError()))
+    r = student.post(f"/student/exams/{exam_id}", data={"csrf": s, "q1": "0", "q2": "1", "q3": "0"})
+    sub_path = r.headers["Location"]
+    monkeypatch.setattr(grader_client, "grade_submission", real)
+    student.post(f"{sub_path}/regrade", data={"csrf": csrf(student, sub_path)})
+
+    review = student.get(sub_path).get_data(as_text=True)
+    assert "2/2" in review and "Q1" in review and "NEW" not in review
+    with app.app_context():
+        assert Submission.query.one().answers == {"1": [0], "2": [1]}
+
+    other = app.test_client()
+    login(other, "O", "o@x.edu", "student")
+    page = other.get(f"/student/exams/{exam_id}").get_data(as_text=True)
+    assert "NEW" in page and "Q1" not in page
+
+
+def test_versions_created_per_edit(app):
+    teacher, _, t, exam_id = _setup(app)
+    csv_data = "question,A,B,C,D,correct,points\nI1,a,b,,,A,1\nI2,a,b,,,B,1\nbroken,only,,,,A,1\n"
+    teacher.post(f"/teacher/exams/{exam_id}/import", data={
+        "csrf": t, "file": (io.BytesIO(csv_data.encode()), "q.csv")}, content_type="multipart/form-data")
+    teacher.post(f"/teacher/exams/{exam_id}/import", data={
+        "csrf": t, "file": (io.BytesIO(b"question,A,B,C,D,correct,points\nbroken,only,,,,A,1\n"), "q.csv")},
+        content_type="multipart/form-data")
+    with app.app_context():
+        exam = db.session.get(Exam, exam_id)
+        # Two adds + one import; the all-invalid import adds no version.
+        assert [v.question_ids for v in exam.versions] == [[1], [1, 2], [1, 2, 3, 4]]
+        assert exam.current_version_id == exam.versions[-1].id
+    assert teacher.post(f"/teacher/exams/{exam_id}/questions/99/delete", data={"csrf": t}).status_code == 404
+
+
+def test_restore_moves_pointer_only(app):
+    teacher, student, t, exam_id = _setup(app)
+    teacher.post(f"/teacher/exams/{exam_id}/questions", data={
+        "csrf": t, "text": "NEW", "options": ["a", "b"], "correct": ["0"]})
+    with app.app_context():
+        first = db.session.get(Exam, exam_id).versions[1].id
+    r = teacher.post(f"/teacher/exams/{exam_id}/versions/{first}/restore", data={"csrf": t})
+    assert "Restored version 2" in teacher.get(r.headers["Location"]).get_data(as_text=True)
+    with app.app_context():
+        exam = db.session.get(Exam, exam_id)
+        assert exam.current_version_id == first and len(exam.versions) == 3
+    page = student.get(f"/student/exams/{exam_id}").get_data(as_text=True)
+    assert "Q2" in page and "NEW" not in page
+
+    # A version of another exam cannot be restored here, and other teachers cannot restore at all.
+    r = teacher.post("/teacher/exams/new", data={"csrf": t, "title": "Other"})
+    other_id = int(r.headers["Location"].split("/")[-1])
+    assert teacher.post(f"/teacher/exams/{other_id}/versions/{first}/restore", data={"csrf": t}).status_code == 404
+    intruder = app.test_client()
+    login(intruder, "X", "x@x.edu", "teacher")
+    assert intruder.post(f"/teacher/exams/{exam_id}/versions/{first}/restore",
+                         data={"csrf": csrf(intruder, "/teacher")}).status_code in (403, 404)
+
+
+def test_delete_exam_removes_versions_and_attempts(app):
+    from models import ExamVersion, Question
+    teacher, student, t, exam_id = _setup(app)
+    student.post(f"/student/exams/{exam_id}", data={"csrf": csrf(student, f"/student/exams/{exam_id}"), "q1": "0"})
+    teacher.post(f"/teacher/exams/{exam_id}/delete", data={"csrf": t})
+    with app.app_context():
+        assert (Exam.query.count(), ExamVersion.query.count(), Question.query.count(), Submission.query.count()) \
+            == (0, 0, 0, 0)
