@@ -624,3 +624,118 @@ def test_regrade_reuses_certificate_code(app, monkeypatch):
         code = Certificate.query.one().code
     assert [p["certificate_id"] for p in payloads] == [code, code]
     assert payloads[0]["verify_url"].endswith(f"/verify/{code}")
+
+
+def _multi(app, teacher, t, exam_id, attempts="3", deadline="2099-01-01T00:00"):
+    return teacher.post(f"/teacher/exams/{exam_id}/settings", data={
+        "csrf": t, "duration_minutes": "10", "pass_percent": "50", "max_attempts": attempts,
+        "selection_deadline": deadline})
+
+
+def _attempts_state(app):
+    from models import Certificate
+    with app.app_context():
+        return [(s.attempt_no, s.status, s.score, s.selected, s.certificate.code if s.certificate else None)
+                for s in Submission.query.order_by(Submission.attempt_no)], Certificate.query.count()
+
+
+def _take(student, exam_id, answers):
+    s = csrf(student, f"/student/exams/{exam_id}")
+    return student.post(f"/student/exams/{exam_id}", data={"csrf": s, **answers})
+
+
+def test_several_attempts_need_a_deadline(app):
+    teacher, _, t, exam_id = _setup(app)
+    page = teacher.get(_multi(app, teacher, t, exam_id, deadline="").headers["Location"]).get_data(as_text=True)
+    assert "need a deadline" in page
+    with app.app_context():
+        assert db.session.get(Exam, exam_id).max_attempts == 1
+
+
+def test_attempts_then_choose_one_locks_exam(app):
+    teacher, student, t, exam_id = _setup(app)
+    _multi(app, teacher, t, exam_id)
+    _take(student, exam_id, {"q1": "0"})
+    states, certs = _attempts_state(app)
+    assert states == [(1, "graded", 1.0, False, None)] and certs == 0
+
+    # Revisiting the exam link does not burn an attempt; the next one starts explicitly.
+    assert student.get(f"/student/exams/{exam_id}").headers["Location"].endswith(f"/student/exams/{exam_id}/attempts")
+    page = student.get(f"/student/exams/{exam_id}/attempts").get_data(as_text=True)
+    assert "1/3 attempts used" in page and "Start attempt 2" in page and "Choose this one" in page
+    s = csrf(student, f"/student/exams/{exam_id}/attempts")
+    student.post(f"/student/exams/{exam_id}/start", data={"csrf": s})
+    _take(student, exam_id, {"q1": "0", "q2": "1"})
+
+    other = app.test_client()
+    login(other, "O", "o@x.edu", "student")
+    assert other.post("/student/attempts/1/select", data={"csrf": csrf(other, "/student")}).status_code == 403
+
+    student.post("/student/attempts/1/select", data={"csrf": s})
+    states, certs = _attempts_state(app)
+    assert [st[3] for st in states] == [True, False] and states[0][4] and certs == 1
+    # Final: no second choice, no more attempts.
+    student.post("/student/attempts/2/select", data={"csrf": s})
+    assert [st[3] for st in _attempts_state(app)[0]] == [True, False]
+    r = student.post(f"/student/exams/{exam_id}/start", data={"csrf": s})
+    assert "No attempts left" in student.get(r.headers["Location"]).get_data(as_text=True)
+
+    # Stats count only the chosen attempt.
+    results = teacher.get(f"/teacher/exams/{exam_id}/results").get_data(as_text=True)
+    assert "Counts" in results and "#2" in results
+    with app.app_context():
+        from app import _exam_stats
+        assert _exam_stats(db.session.get(Exam, exam_id))["count"] == 1
+
+
+def test_deadline_picks_best_attempt(app):
+    teacher, student, t, exam_id = _setup(app)
+    _multi(app, teacher, t, exam_id)
+    _take(student, exam_id, {"q1": "0"})
+    s = csrf(student, f"/student/exams/{exam_id}/attempts")
+    student.post(f"/student/exams/{exam_id}/start", data={"csrf": s})
+    _take(student, exam_id, {"q1": "0", "q2": "1"})
+    student.post(f"/student/exams/{exam_id}/start", data={"csrf": s})
+    _take(student, exam_id, {"q1": "0", "q2": "1"})
+    with app.app_context():
+        from datetime import timedelta
+
+        from models import utcnow
+        db.session.get(Exam, exam_id).selection_deadline = utcnow() - timedelta(minutes=1)
+        db.session.commit()
+    student.get("/student")
+    states, certs = _attempts_state(app)
+    # Best score wins; on a tie the earlier attempt.
+    assert [st[3] for st in states] == [False, True, False] and states[1][4] and certs == 1
+
+
+def test_cron_finalize_needs_secret_and_finalizes(app):
+    app.config["GRADER_SECRET"] = "s3cret"
+    teacher, student, t, exam_id = _setup(app)
+    _multi(app, teacher, t, exam_id)
+    _take(student, exam_id, {"q1": "0"})
+    anon = app.test_client()
+    assert anon.post("/api/cron/finalize").status_code == 401
+    assert anon.post("/api/cron/finalize", json={}, headers={"x-grader-secret": "s3cret"}).get_json()["exams"] == 0
+    with app.app_context():
+        from datetime import timedelta
+
+        from models import utcnow
+        db.session.get(Exam, exam_id).selection_deadline = utcnow() - timedelta(minutes=1)
+        db.session.commit()
+    assert anon.post("/api/cron/finalize", json={}, headers={"x-grader-secret": "s3cret"}).get_json()["exams"] == 1
+    assert _attempts_state(app)[0][0][3] is True
+
+
+def test_concurrent_start_creates_one_attempt(app):
+    from app import _start_attempt
+    from models import User
+    teacher, _, t, exam_id = _setup(app)
+    _multi(app, teacher, t, exam_id)
+    with app.app_context():
+        exam = db.session.get(Exam, exam_id)
+        sid = User.query.filter_by(email="s@x.edu").one().id
+        # Both requests read "no attempts yet" before either inserted.
+        assert _start_attempt(exam, sid, []) is not None
+        assert _start_attempt(exam, sid, []) is None
+        assert Submission.query.count() == 1

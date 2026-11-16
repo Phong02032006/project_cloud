@@ -44,12 +44,13 @@
 <div class="qc-card overflow-hidden">
   <div class="table-responsive">
   <table class="table qc-table">
-    <thead><tr><th>Student</th><th>Score</th><th style="width:22%">Percent</th><th>Result</th><th>Integrity</th><th>Submitted (UTC)</th><th></th></tr></thead>
+    <thead><tr><th>Student</th><th>Attempt</th><th>Score</th><th style="width:22%">Percent</th><th>Result</th><th>Integrity</th><th>Submitted (UTC)</th><th></th></tr></thead>
     <tbody>
     {% for s in submissions %}
       <tr>
         <td><div class="d-flex align-items-center"><span class="qc-mini-avatar">{{ s.student.name|initial }}</span>
           <div><div class="fw-semibold">{{ s.student.name }}</div><div class="small text-secondary">{{ s.student.email }}</div></div></div></td>
+        <td class="text-nowrap">#{{ s.attempt_no }}{% if s.selected %} <span class="qc-chip success">Counts</span>{% endif %}</td>
         {% if s.status == 'graded' %}
           <td class="fw-bold">{{ s.score|num }}/{{ s.max_score|num }}</td>
           <td><div class="d-flex align-items-center gap-2"><div class="qc-progress flex-grow-1"><span style="width: {{ s.percent }}%"></span></div><span class="small fw-semibold">{{ s.percent|num }}%</span></div></td>
@@ -66,7 +67,7 @@
         <td class="text-end"><a href="{{ url_for('submission_view', sub_id=s.id) }}" class="btn btn-sm btn-ghost">Details <i class="bi bi-chevron-right"></i></a></td>
       </tr>
     {% else %}
-      <tr><td colspan="7"><div class="qc-empty"><i class="bi bi-inbox"></i>No submissions yet.</div></td></tr>
+      <tr><td colspan="8"><div class="qc-empty"><i class="bi bi-inbox"></i>No submissions yet.</div></td></tr>
     {% endfor %}
     </tbody>
   </table>

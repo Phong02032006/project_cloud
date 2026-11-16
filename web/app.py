@@ -2,12 +2,14 @@ import csv
 import io
 import secrets
 import statistics
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 import click
 from flask import (Flask, Response, abort, flash, g, jsonify, redirect, render_template, request, send_file,
                    session, url_for)
-from sqlalchemy import update
+from sqlalchemy import exists, update
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import aliased
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 import grader_client
@@ -45,7 +47,7 @@ def register_security(app):
     @app.before_request
     def check_csrf():
         # The grader callback is server-to-server and authenticated by the shared secret instead.
-        if request.method == "POST" and request.endpoint != "grader_callback":
+        if request.method == "POST" and request.endpoint not in ("grader_callback", "cron_finalize"):
             # In dev mode, allow switching between accounts seamlessly without stale CSRF token clashes
             if request.endpoint == "auth.login" and app.config.get("AUTH_MODE") == "dev":
                 return
@@ -76,8 +78,13 @@ def _parse_correct(raw, n_options):
     return idx
 
 
+def _counting(subs):
+    """The attempts that count: the selected attempt per student, once graded."""
+    return [s for s in subs if s.selected and s.status == "graded"]
+
+
 def _exam_stats(exam):
-    graded = [s for s in exam.submissions if s.status == "graded"]
+    graded = _counting(exam.submissions)
     if not graded:
         return None
     percents = [s.percent for s in graded]
@@ -102,7 +109,7 @@ def _edit_impact(exam):
 
 def _question_stats(exam):
     """Percentage of graded submissions answering each question correctly (for the report)."""
-    graded = [s for s in exam.submissions if s.status == "graded" and s.details]
+    graded = [s for s in _counting(exam.submissions) if s.details]
     out = {}
     for q in exam.questions:
         hits = [d["is_correct"] for s in graded for d in s.details if d["question_id"] == q.id]
@@ -181,6 +188,71 @@ def _attempt_state(sub):
     return state
 
 
+def _attempts(exam, student_id):
+    return Submission.query.filter_by(exam_id=exam.id, student_id=student_id).order_by(Submission.attempt_no).all()
+
+
+def _allowance(exam, student_id):
+    return exam.max_attempts
+
+
+def _window_closed(exam, student_id):
+    return exam.selection_deadline is not None and utcnow() >= exam.selection_deadline
+
+
+def _can_start(exam, attempts):
+    student_id = attempts[0].student_id if attempts else g.user.id
+    return (not any(a.selected or a.status == "in_progress" for a in attempts)
+            and len(attempts) < _allowance(exam, student_id) and not _window_closed(exam, student_id))
+
+
+def _start_attempt(exam, student_id, attempts):
+    """Returns the new attempt, or None if another request started one at the same moment."""
+    allowance = _allowance(exam, student_id)
+    sub = Submission(exam_id=exam.id, student_id=student_id, version_id=exam.current_version_id, answers={},
+                     status="in_progress", attempt_no=max((a.attempt_no for a in attempts), default=0) + 1,
+                     selected=allowance == 1)
+    db.session.add(sub)
+    try:
+        db.session.commit()
+    except IntegrityError:
+        db.session.rollback()
+        return None
+    return sub
+
+
+def _select(app, sub):
+    """Mark `sub` as the attempt that counts, unless one already is (checked in the same UPDATE), then issue
+    its certificate by grading it again with issuing on."""
+    other = aliased(Submission)
+    already = exists().where(other.exam_id == sub.exam_id, other.student_id == sub.student_id, other.selected)
+    claimed = db.session.execute(
+        update(Submission).where(Submission.id == sub.id, ~already).values(selected=True)
+    ).rowcount == 1
+    db.session.commit()
+    db.session.refresh(sub)
+    if claimed and sub.status == "graded":
+        _grade_and_save(app, sub)
+    return claimed
+
+
+def _finalize(app, exam, student_id):
+    """Past the deadline, pick the best graded attempt for a student who has not chosen."""
+    attempts = _attempts(exam, student_id)
+    _finish_expired(app, attempts)
+    if (any(a.selected or a.status in ("in_progress", "pending") for a in attempts)
+            or not (_window_closed(exam, student_id) or len(attempts) >= _allowance(exam, student_id) == 1)):
+        return
+    graded = [a for a in attempts if a.status == "graded" and a.review != "cancelled"]
+    if graded:
+        _select(app, max(graded, key=lambda a: (a.percent, -a.attempt_no)))
+
+
+def _finalize_exam(app, exam):
+    for student_id in {s.student_id for s in exam.submissions}:
+        _finalize(app, exam, student_id)
+
+
 def _finish_if_expired(app, sub):
     if sub.status == "in_progress" and utcnow() > sub.deadline + SUBMIT_GRACE and _claim(sub):
         _grade_and_save(app, sub)
@@ -199,9 +271,10 @@ def _grade_and_save(app, sub):
     policy = version.settings
     withhold = (policy["managed"] and policy["withhold_if_flagged"] and sub.violations > 0
                 and sub.review not in ("released", "cancelled"))
+    notify_withheld = withhold and sub.review != "withheld"
     if withhold:
         sub.review = "withheld"
-    issue = not withhold and sub.review != "cancelled"
+    issue = sub.selected and not withhold and sub.review != "cancelled"
     if issue and sub.certificate is None:
         db.session.add(Certificate(code=secrets.token_hex(5).upper(), exam_id=sub.exam_id, student_id=sub.student_id,
                                    submission=sub))
@@ -214,6 +287,8 @@ def _grade_and_save(app, sub):
         "answers": sub.answers,
         "issue_certificate": issue,
     }
+    if notify_withheld:
+        payload["notice"] = "withheld"
     if issue:
         payload["certificate_id"] = sub.certificate.code
         payload["verify_url"] = url_for("verify_certificate", code=sub.certificate.code, _external=True)
@@ -247,7 +322,7 @@ def register_routes(app):
     @login_required("teacher")
     def teacher_dashboard():
         exams = Exam.query.filter_by(teacher_id=g.user.id).order_by(Exam.created_at.desc()).all()
-        graded = [s for e in exams for s in e.submissions if s.status == "graded"]
+        graded = _counting([s for e in exams for s in e.submissions])
         summary = {
             "exams": len(exams),
             "published": sum(1 for e in exams if e.published),
@@ -359,6 +434,16 @@ def register_routes(app):
         f = request.form
         exam.duration_minutes = max(1, f.get("duration_minutes", exam.duration_minutes, type=int))
         exam.pass_percent = min(100, max(0, f.get("pass_percent", exam.pass_percent, type=float)))
+        max_attempts = max(1, f.get("max_attempts", exam.max_attempts, type=int))
+        deadline = f.get("selection_deadline", "").strip()
+        try:
+            deadline = datetime.fromisoformat(deadline) if deadline else None
+        except ValueError:
+            deadline = None
+        if max_attempts > 1 and deadline is None:
+            flash("Exams with several attempts need a deadline for choosing the attempt that counts.", "danger")
+            return redirect(url_for("exam_manage", exam_id=exam.id))
+        exam.max_attempts, exam.selection_deadline = max_attempts, deadline
         policy = {k: k in f for k, v in DEFAULT_POLICY.items() if isinstance(v, bool)}
         limit = f.get("autosubmit_after", type=int)
         policy["autosubmit_after"] = max(1, limit) if "autosubmit" in f and limit else None
@@ -405,23 +490,23 @@ def register_routes(app):
     @login_required("teacher")
     def exam_results(exam_id):
         exam = _own_exam(exam_id)
-        _finish_expired(app, exam.submissions)
-        subs = sorted(exam.submissions, key=lambda s: s.submitted_at, reverse=True)
+        _finalize_exam(app, exam)
+        subs = sorted(exam.submissions, key=lambda s: (s.student.name, s.attempt_no))
         return render_template("exam_results.html", exam=exam, submissions=subs, stats=_exam_stats(exam))
 
     @app.route("/teacher/exams/<int:exam_id>/results.csv")
     @login_required("teacher")
     def exam_results_csv(exam_id):
         exam = _own_exam(exam_id)
-        _finish_expired(app, exam.submissions)
+        _finalize_exam(app, exam)
         buf = io.StringIO()
         w = csv.writer(buf)
-        w.writerow(["Full name", "Email", "Score", "Max score", "Percent", "Result", "Submitted at (UTC)", "Certificate ID",
+        w.writerow(["Full name", "Email", "Attempt", "Counts", "Score", "Max score", "Percent", "Result", "Submitted at (UTC)", "Certificate ID",
                     "Violations", "Review"])
         for s in sorted(exam.submissions, key=lambda s: s.submitted_at):
             if s.status == "in_progress":
                 continue
-            w.writerow([s.student.name, s.student.email, s.score, s.max_score, s.percent,
+            w.writerow([s.student.name, s.student.email, s.attempt_no, "yes" if s.selected else "", s.score, s.max_score, s.percent,
                         "Passed" if s.passed else "Failed", s.submitted_at.strftime("%Y-%m-%d %H:%M"),
                         s.certificate.code if s.certificate else "", s.violations, s.review or ""])
         # BOM so Excel opens Vietnamese text correctly.
@@ -432,19 +517,25 @@ def register_routes(app):
     @login_required("teacher")
     def exam_report(exam_id):
         exam = _own_exam(exam_id)
-        _finish_expired(app, exam.submissions)
+        _finalize_exam(app, exam)
         return render_template("exam_report.html", exam=exam, stats=_exam_stats(exam),
                                qstats=_question_stats(exam),
-                               submissions=sorted(exam.submissions, key=lambda s: -(s.percent or 0)))
+                               submissions=sorted(_counting(exam.submissions), key=lambda s: -(s.percent or 0)))
 
     # ---------- Student ----------
     @app.route("/student")
     @login_required("student")
     def student_dashboard():
         exams = Exam.query.filter_by(published=True).order_by(Exam.created_at.desc()).all()
-        mine = {s.exam_id: s for s in Submission.query.filter_by(student_id=g.user.id)}
-        _finish_expired(app, mine.values())
-        return render_template("student_dashboard.html", exams=exams, mine=mine)
+        for exam_id in {s.exam_id for s in Submission.query.filter_by(student_id=g.user.id)}:
+            _finalize(app, db.session.get(Exam, exam_id), g.user.id)
+        by_exam = {}
+        for s in Submission.query.filter_by(student_id=g.user.id).order_by(Submission.attempt_no):
+            by_exam.setdefault(s.exam_id, []).append(s)
+        # The attempt shown on each card: the running one, else the selected one, else the latest.
+        mine = {eid: next((a for a in subs if a.status == "in_progress"), None)
+                or next((a for a in subs if a.selected), None) or subs[-1] for eid, subs in by_exam.items()}
+        return render_template("student_dashboard.html", exams=exams, mine=mine, attempts=by_exam)
 
     @app.route("/student/exams/<int:exam_id>", methods=["GET", "POST"])
     @login_required("student")
@@ -452,17 +543,19 @@ def register_routes(app):
         exam = db.get_or_404(Exam, exam_id)
         if not exam.published:
             abort(404)
-        # get current attempt, if null -> start a new timed attempt
-        sub = Submission.query.filter_by(exam_id=exam.id, student_id=g.user.id).first()
+        attempts = _attempts(exam, g.user.id)
+        _finish_expired(app, attempts)
+        sub = next((a for a in attempts if a.status == "in_progress"), None)
         if sub is None:
-            # pin the current version; this attempt reads only from it from now on
-            sub = Submission(exam_id=exam.id, student_id=g.user.id, version_id=exam.current_version_id,
-                             answers={}, status="in_progress")
-            db.session.add(sub)
-            db.session.commit()
-        _finish_if_expired(app, sub) # if the attempt is ongoing but expired, submit right away
-        if sub.status != "in_progress":
-            return redirect(url_for("submission_view", sub_id=sub.id))
+            # Only the very first attempt starts straight from the exam link; later ones go through the
+            # attempts page so a stray click cannot burn an attempt.
+            if attempts or not _can_start(exam, attempts) or request.method != "GET":
+                if len(attempts) == 1 and exam.max_attempts == 1:
+                    return redirect(url_for("submission_view", sub_id=attempts[0].id))
+                return redirect(url_for("exam_attempts", exam_id=exam.id))
+            sub = _start_attempt(exam, g.user.id, attempts)
+            if sub is None:
+                return redirect(url_for("take_exam", exam_id=exam.id))
         if request.method == "GET":
             policy = sub.version.settings
             if policy["managed"]:
@@ -484,13 +577,54 @@ def register_routes(app):
             flash("Your answers were saved but grading failed. Click 'Regrade' or contact your teacher.", "danger")
         return redirect(url_for("submission_view", sub_id=sub.id))
 
+    @app.route("/student/exams/<int:exam_id>/attempts")
+    @login_required("student")
+    def exam_attempts(exam_id):
+        exam = db.get_or_404(Exam, exam_id)
+        _finalize(app, exam, g.user.id)
+        attempts = _attempts(exam, g.user.id)
+        if not exam.published and not attempts:
+            abort(404)
+        return render_template("exam_attempts.html", exam=exam, attempts=attempts,
+                               allowance=_allowance(exam, g.user.id),
+                               can_start=exam.published and _can_start(exam, attempts),
+                               window_closed=_window_closed(exam, g.user.id))
+
+    @app.route("/student/exams/<int:exam_id>/start", methods=["POST"])
+    @login_required("student")
+    def exam_start(exam_id):
+        exam = db.get_or_404(Exam, exam_id)
+        if not exam.published:
+            abort(404)
+        attempts = _attempts(exam, g.user.id)
+        _finish_expired(app, attempts)
+        if any(a.status == "in_progress" for a in attempts):
+            return redirect(url_for("take_exam", exam_id=exam.id))
+        if not _can_start(exam, attempts):
+            flash("No attempts left for this exam.", "danger")
+            return redirect(url_for("exam_attempts", exam_id=exam.id))
+        _start_attempt(exam, g.user.id, attempts)
+        return redirect(url_for("take_exam", exam_id=exam.id))
+
+    @app.route("/student/attempts/<int:sub_id>/select", methods=["POST"])
+    @login_required("student")
+    def attempt_select(sub_id):
+        sub = db.get_or_404(Submission, sub_id)
+        if sub.student_id != g.user.id:
+            abort(403)
+        if sub.status != "graded" or sub.review == "cancelled" or not _select(app, sub):
+            flash("This attempt cannot be selected.", "danger")
+        else:
+            flash(f"Attempt {sub.attempt_no} selected. This exam is now final.", "success")
+        return redirect(url_for("exam_attempts", exam_id=sub.exam_id))
+
     @app.route("/submissions/<int:sub_id>")
     @login_required()
     def submission_view(sub_id):
         sub = db.get_or_404(Submission, sub_id)
         if g.user.id not in (sub.student_id, sub.exam.teacher_id):
             abort(403)
-        _finish_if_expired(app, sub)
+        _finalize(app, sub.exam, sub.student_id)
         if sub.status == "in_progress" and g.user.id == sub.student_id:
             return redirect(url_for("take_exam", exam_id=sub.exam_id))
         cert_url = None
@@ -643,6 +777,20 @@ def register_routes(app):
         db.session.commit()
         app.logger.info("callback: submission %s graded %s/%s", sub.id, sub.score, sub.max_score)
         return jsonify(status="ok")
+
+    @app.route("/api/cron/finalize", methods=["POST"])
+    def cron_finalize():
+        """Called every ~15 minutes by an EventBridge schedule (through the Lambda): expire abandoned attempts and
+        pick the best attempt for students who missed the selection deadline. The same work also happens lazily
+        whenever a page touches those attempts, so a missed run only delays certificates."""
+        secret = app.config["GRADER_SECRET"]
+        if not secret or not secrets.compare_digest(request.headers.get("x-grader-secret", ""), secret):
+            return jsonify(error="unauthorized"), 401
+        _finish_expired(app, Submission.query.filter_by(status="in_progress").all())
+        exams = Exam.query.filter(Exam.selection_deadline.isnot(None), Exam.selection_deadline <= utcnow()).all()
+        for exam in exams:
+            _finalize_exam(app, exam)
+        return jsonify(status="ok", exams=len(exams))
 
     @app.route("/submissions/<int:sub_id>/regrade", methods=["POST"])
     @login_required()

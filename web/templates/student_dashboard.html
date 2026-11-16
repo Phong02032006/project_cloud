@@ -39,8 +39,11 @@
           <span><i class="bi bi-clock text-primary"></i> {{ e.duration_minutes }} min</span>
           <span><i class="bi bi-trophy text-primary"></i> ≥ {{ e.pass_percent|num }}%</span>
           {% if e.settings.managed %}<span><i class="bi bi-shield-lock text-primary"></i> Managed</span>{% endif %}
+          {% if e.max_attempts > 1 %}<span><i class="bi bi-arrow-repeat text-primary"></i> {{ attempts.get(e.id, [])|length }}/{{ e.max_attempts }} attempts</span>{% endif %}
         </div>
-        {% if s and s.status == 'in_progress' %}
+        {% if e.max_attempts > 1 and s and s.status != 'in_progress' %}
+          <a href="{{ url_for('exam_attempts', exam_id=e.id) }}" class="btn btn-ghost">{{ 'View result' if s.selected else 'Attempts & choose' }} <i class="bi bi-arrow-right"></i></a>
+        {% elif s and s.status == 'in_progress' %}
           <a href="{{ url_for('take_exam', exam_id=e.id) }}" class="btn btn-primary"><i class="bi bi-play-fill"></i> Continue exam</a>
         {% elif s %}
           <a href="{{ url_for('submission_view', sub_id=s.id) }}" class="btn btn-ghost">View result <i class="bi bi-arrow-right"></i></a>

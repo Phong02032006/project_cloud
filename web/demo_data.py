@@ -80,7 +80,7 @@ def seed_demo(app, grade_fn):
                 else:
                     answers[str(q.id)] = [rng.randrange(len(q.options))]
             sub = Submission(exam_id=exam.id, student_id=student.id, version_id=exam.current_version_id,
-                             answers=answers)
+                             answers=answers, selected=True)
             db.session.add(sub)
             db.session.commit()
             grade_fn(sub)

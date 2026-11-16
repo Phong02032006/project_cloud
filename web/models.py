@@ -42,6 +42,9 @@ class Exam(db.Model):
     pass_percent = db.Column(db.Float, default=50)
     published = db.Column(db.Boolean, default=False, nullable=False)
     policy = db.Column(db.JSON)
+    max_attempts = db.Column(db.Integer, default=1, nullable=False)
+    # With several attempts the student picks one; past this the best one is picked for them.
+    selection_deadline = db.Column(db.DateTime)
     teacher_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)
     created_at = db.Column(db.DateTime, default=utcnow)
 
@@ -126,8 +129,11 @@ class Question(db.Model):
 
 class Submission(db.Model):
     __tablename__ = "submissions"
-    __table_args__ = (db.UniqueConstraint("exam_id", "student_id", name="uq_one_attempt"),)
+    # The unique attempt number also stops two tabs from starting the same attempt twice.
+    __table_args__ = (db.UniqueConstraint("exam_id", "student_id", "attempt_no", name="uq_attempt_no"),)
     id = db.Column(db.Integer, primary_key=True)
+    attempt_no = db.Column(db.Integer, default=1, nullable=False)
+    selected = db.Column(db.Boolean, default=False, nullable=False)  # the attempt that counts and gets the certificate
     exam_id = db.Column(db.Integer, db.ForeignKey("exams.id"), nullable=False)
     student_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)
     version_id = db.Column(db.Integer, db.ForeignKey("exam_versions.id"), nullable=False)  # pinned at start

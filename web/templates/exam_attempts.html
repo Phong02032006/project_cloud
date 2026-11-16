@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+{% block title %}{{ exam.title }} - attempts{% endblock %}
+{% block content %}
+<a href="{{ url_for('student_dashboard') }}" class="qc-breadcrumb"><i class="bi bi-arrow-left"></i> Dashboard</a>
+{% set chosen = attempts|selectattr('selected')|first %}
+<div class="qc-page-head mt-1">
+  <div>
+    <h2>{{ exam.title }}</h2>
+    <div class="d-flex flex-wrap gap-2 mt-2">
+      <span class="qc-chip"><i class="bi bi-arrow-repeat"></i> {{ attempts|length }}/{{ allowance }} attempts used</span>
+      {% if exam.selection_deadline %}<span class="qc-chip {{ 'danger' if window_closed else '' }}"><i class="bi bi-calendar-event"></i> Choose by {{ exam.selection_deadline.strftime('%b %d, %Y %H:%M') }} UTC</span>{% endif %}
+      {% if chosen %}<span class="qc-chip success"><i class="bi bi-lock-fill"></i> Final: attempt {{ chosen.attempt_no }}</span>{% endif %}
+    </div>
+  </div>
+  {% if can_start %}
+  <form method="post" action="{{ url_for('exam_start', exam_id=exam.id) }}" class="m-0"
+        data-confirm="Start attempt {{ attempts|length + 1 }} of {{ allowance }}? The timer starts immediately.">
+    <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+    <button class="btn btn-primary"><i class="bi bi-play-fill"></i> Start attempt {{ attempts|length + 1 }}</button>
+  </form>
+  {% endif %}
+</div>
+
+{% if not chosen and attempts %}
+<div class="alert alert-info">Pick the attempt that counts. Only that attempt gets a certificate, and picking one ends the exam for you: no further attempts.
+  {% if exam.selection_deadline %}If you have not picked by the deadline, your best attempt is picked for you.{% endif %}</div>
+{% endif %}
+
+<div class="qc-card overflow-hidden">
+  <table class="table qc-table m-0">
+    <thead><tr><th>Attempt</th><th>Result</th><th>Submitted (UTC)</th><th></th></tr></thead>
+    <tbody>
+    {% for a in attempts %}
+      <tr>
+        <td class="fw-semibold">#{{ a.attempt_no }} {% if a.selected %}<span class="qc-chip success ms-1">Counts</span>{% endif %}</td>
+        <td>
+          {% if a.status == 'in_progress' %}<span class="qc-chip info">In progress</span>
+          {% elif a.review == 'withheld' %}<span class="qc-chip warning">Under review</span>
+          {% elif a.review == 'cancelled' %}<span class="qc-chip danger">Cancelled</span>
+          {% elif a.status == 'graded' %}<b>{{ a.score|num }}/{{ a.max_score|num }}</b> · {{ a.percent|num }}% {{ '· Passed' if a.passed else '· Failed' }}
+          {% else %}<span class="qc-chip warning">Grading...</span>{% endif %}
+        </td>
+        <td class="small text-secondary">{{ a.submitted_at.strftime('%b %d, %Y %H:%M') if a.status != 'in_progress' else '' }}</td>
+        <td class="text-end d-flex gap-2 justify-content-end">
+          {% if a.status == 'in_progress' %}
+            <a href="{{ url_for('take_exam', exam_id=exam.id) }}" class="btn btn-sm btn-primary">Continue</a>
+          {% else %}
+            <a href="{{ url_for('submission_view', sub_id=a.id) }}" class="btn btn-sm btn-ghost">Details</a>
+            {% if not chosen and a.status == 'graded' and a.review != 'cancelled' %}
+            <form method="post" action="{{ url_for('attempt_select', sub_id=a.id) }}" class="m-0"
+                  data-confirm="Make attempt {{ a.attempt_no }} the one that counts? This is final: you cannot change it or take more attempts.">
+              <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+              <button class="btn btn-sm btn-soft"><i class="bi bi-check2-circle"></i> Choose this one</button>
+            </form>
+            {% endif %}
+          {% endif %}
+        </td>
+      </tr>
+    {% else %}
+      <tr><td colspan="4"><div class="qc-empty"><i class="bi bi-inbox"></i>No attempts yet.</div></td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

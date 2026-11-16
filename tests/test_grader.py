@@ -181,7 +181,7 @@ def test_post_callback_sends_secret(aws, queue, monkeypatch):
 
 def test_withheld_grades_without_pdf_and_sends_review_notice(aws):
     s3, ses = aws
-    resp = handler.lambda_handler(_event({**PAYLOAD, "issue_certificate": False}), None)
+    resp = handler.lambda_handler(_event({**PAYLOAD, "issue_certificate": False, "notice": "withheld"}), None)
     body = json.loads(resp["body"])
     assert resp["statusCode"] == 200 and body["score"] == 3
     assert body["certificate_key"] is None and body["certificate_url"] is None and not s3.objects
@@ -207,3 +207,17 @@ def test_certificate_uses_given_code_and_verify_link(aws):
     body = json.loads(resp["body"])
     assert body["certificate_id"] == "ABC123DEF0" and body["certificate_key"].endswith("-ABC123DEF0.pdf")
     assert b"https://quiz.example/verify/ABC123DEF0" in s3.objects[body["certificate_key"]]
+
+
+def test_unselected_attempt_grades_silently(aws):
+    s3, ses = aws
+    body = json.loads(handler.lambda_handler(_event({**PAYLOAD, "issue_certificate": False}), None)["body"])
+    assert body["score"] == 3 and not s3.objects and not ses.sent
+
+
+def test_schedule_event_pokes_finalize(monkeypatch):
+    calls = []
+    monkeypatch.setattr(handler, "_post_web", lambda url, body: calls.append(url))
+    monkeypatch.setenv("WEB_CALLBACK_URL", "https://quiz.example/api/grader/callback")
+    assert handler.lambda_handler({"source": "aws.events", "detail-type": "Scheduled Event"}, None)["status"] == "ok"
+    assert calls == ["https://quiz.example/api/cron/finalize"]

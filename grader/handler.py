@@ -4,6 +4,7 @@ One function, two triggers:
 - API Gateway (HTTP): action "submit" queues a submission on SQS; "grade" grades synchronously; "presign" refreshes a link;
   "notify" emails the student about a withheld/cancelled result.
 - SQS: grades queued submissions, stores the PDF on S3, reports the result to the web app and emails the student.
+- EventBridge schedule: pokes the web app's /api/cron/finalize so selection deadlines are enforced on time.
 """
 import base64
 import hmac
@@ -87,26 +88,40 @@ def _send_notice(kind, student, exam_title):
 
 
 def _deliver(payload, result, url=None):
-    """Email the result, or the 'under review' notice when the certificate was withheld."""
+    """Email the certificate, or the notice the web app asked for (e.g. 'withheld'). Attempts graded without a
+    certificate and without a notice (not yet selected) send nothing."""
     student = payload["student"]
     if result["certificate_key"]:
         _send_email(student.get("email"), student["name"], payload["exam"]["title"], result,
                     url or _presign(result["certificate_key"]))
-    else:
-        _send_notice("withheld", student, payload["exam"]["title"])
+    elif payload.get("notice") in NOTICES:
+        _send_notice(payload["notice"], student, payload["exam"]["title"])
 
 
-def _post_callback(body):
-    """Report a grading result to the web app on Azure. Raises on failure so SQS retries the message."""
+def _post_web(url, body):
     req = urllib.request.Request(
-        os.environ["WEB_CALLBACK_URL"],
+        url,
         data=json.dumps(body).encode("utf-8"),
         headers={"Content-Type": "application/json", "x-grader-secret": os.environ["GRADER_SECRET"]},
         method="POST",
     )
     with urllib.request.urlopen(req, timeout=10) as resp:
         if resp.status >= 300:
-            raise RuntimeError(f"callback returned HTTP {resp.status}")
+            raise RuntimeError(f"web app returned HTTP {resp.status}")
+
+
+def _post_callback(body):
+    """Report a grading result to the web app on Azure. Raises on failure so SQS retries the message."""
+    _post_web(os.environ["WEB_CALLBACK_URL"], body)
+
+
+def _handle_schedule():
+    # Defaults to the callback URL's host, so only WEB_CALLBACK_URL needs configuring.
+    url = os.environ.get("WEB_CRON_URL") or os.environ["WEB_CALLBACK_URL"].replace("/api/grader/callback",
+                                                                                  "/api/cron/finalize")
+    _post_web(url, {})
+    log.info("finalize cron sent to %s", url)
+    return {"status": "ok"}
 
 
 def _validate(payload):
@@ -131,6 +146,8 @@ def _handle_sqs(event):
 def lambda_handler(event, context):
     if event.get("Records") and event["Records"][0].get("eventSource") == "aws:sqs":
         return _handle_sqs(event)
+    if event.get("source") in ("aws.events", "aws.scheduler") or event.get("detail-type") == "Scheduled Event":
+        return _handle_schedule()
 
     headers = {k.lower(): v for k, v in (event.get("headers") or {}).items()}
     secret = os.environ.get("GRADER_SECRET", "")

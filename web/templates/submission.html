@@ -3,7 +3,8 @@
 {% block content %}
 <a href="{{ url_for('index') }}" class="qc-breadcrumb"><i class="bi bi-arrow-left"></i> Dashboard</a>
 <h2 class="mt-1">{{ exam.title }}</h2>
-<div class="text-secondary mb-4"><i class="bi bi-person"></i> {{ sub.student.name }} · <i class="bi bi-calendar3"></i> {{ sub.submitted_at.strftime('%b %d, %Y %H:%M') }} (UTC)</div>
+<div class="text-secondary mb-4">{% if exam.max_attempts > 1 or sub.attempt_no > 1 %}<i class="bi bi-arrow-repeat"></i> Attempt {{ sub.attempt_no }}{{ ' (counts)' if sub.selected }}
+  {% if not is_teacher %}· <a href="{{ url_for('exam_attempts', exam_id=exam.id) }}">all attempts</a>{% endif %} · {% endif %}<i class="bi bi-person"></i> {{ sub.student.name }} · <i class="bi bi-calendar3"></i> {{ sub.submitted_at.strftime('%b %d, %Y %H:%M') }} (UTC)</div>
 
 {% if is_teacher and (sub.review or sub.events) %}
 <div class="qc-card p-4 mb-4">

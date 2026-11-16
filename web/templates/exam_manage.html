@@ -12,6 +12,7 @@
       <span class="qc-chip"><i class="bi bi-star"></i> {{ exam.max_score|num }} points</span>
       <span class="qc-chip"><i class="bi bi-clock"></i> {{ exam.duration_minutes }} min</span>
       <span class="qc-chip"><i class="bi bi-trophy"></i> Pass at {{ exam.pass_percent|num }}%</span>
+      {% if exam.max_attempts > 1 %}<span class="qc-chip"><i class="bi bi-arrow-repeat"></i> {{ exam.max_attempts }} attempts · choose by {{ exam.selection_deadline.strftime('%b %d %H:%M') }} UTC</span>{% endif %}
       {% if exam.settings.managed %}<span class="qc-chip info"><i class="bi bi-shield-lock"></i> Managed</span>{% endif %}
     </div>
   </div>
@@ -109,6 +110,9 @@
         <div class="row g-3 mb-3">
           <div class="col-6"><label class="form-label small">Time limit (minutes)</label><input name="duration_minutes" type="number" min="1" value="{{ exam.duration_minutes }}" class="form-control"></div>
           <div class="col-6"><label class="form-label small">Pass mark (%)</label><input name="pass_percent" type="number" min="0" max="100" value="{{ exam.pass_percent|num }}" class="form-control"></div>
+          <div class="col-6"><label class="form-label small">Attempts per student</label><input name="max_attempts" type="number" min="1" value="{{ exam.max_attempts }}" class="form-control"></div>
+          <div class="col-6"><label class="form-label small">Choose-by deadline (UTC)</label><input name="selection_deadline" type="datetime-local" value="{{ exam.selection_deadline.strftime('%Y-%m-%dT%H:%M') if exam.selection_deadline else '' }}" class="form-control"></div>
+          <div class="col-12 form-text mt-1">With more than one attempt, students pick the attempt that counts; at the deadline the best one is picked for anyone who has not. Attempt and deadline settings apply to all students immediately, not per version.</div>
         </div>
         <div class="form-check form-switch mb-2">
           <input class="form-check-input" type="checkbox" name="managed" id="managed" {{ 'checked' if p.managed }}>
