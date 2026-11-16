@@ -31,11 +31,55 @@ class Exam(db.Model):
     teacher_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)
     created_at = db.Column(db.DateTime, default=utcnow)
 
+    # ptr to the version new attempts get; restore = just move this
+    # use_alter: exams <-> exam_versions point at each other, so this FK is added after both tables exist
+    current_version_id = db.Column(db.Integer, db.ForeignKey("exam_versions.id", use_alter=True,
+                                                             name="fk_exams_current_version"))
+
     teacher = db.relationship("User")
-    questions = db.relationship(
-        "Question", backref="exam", cascade="all, delete-orphan", order_by="Question.position"
-    )
+    # post_update: set the ptr in a separate UPDATE after insert (and null it before delete) to break the cycle
+    current_version = db.relationship("ExamVersion", foreign_keys=[current_version_id], post_update=True)
+    versions = db.relationship("ExamVersion", foreign_keys="ExamVersion.exam_id", backref="exam",
+                               cascade="all, delete-orphan", order_by="ExamVersion.id")
+    # every question row this exam ever owned; only here so deleting the exam cleans them up
+    question_rows = db.relationship("Question", backref="exam", cascade="all, delete-orphan")
     submissions = db.relationship("Submission", backref="exam", cascade="all, delete-orphan")
+
+    # questions of the current version; kept the old name so existing callers work unchanged
+    @property
+    def questions(self):
+        return self.current_version.questions if self.current_version else []
+
+    @property
+    def max_score(self):
+        return sum(q.points for q in self.questions)
+
+    # the only way to change the question set: snapshot a new version and move the ptr to it
+    def new_version(self, question_ids):
+        version = ExamVersion(exam=self, question_ids=list(question_ids), pass_percent=self.pass_percent,
+                              duration_minutes=self.duration_minutes)
+        db.session.add(version)
+        self.current_version = version
+        return version
+
+
+# immutable snapshot of an exam; never updated after insert
+# attempts pin one of these, so editing the exam never touches a running or graded attempt
+class ExamVersion(db.Model):
+    __tablename__ = "exam_versions"
+    id = db.Column(db.Integer, primary_key=True)
+    exam_id = db.Column(db.Integer, db.ForeignKey("exams.id"), nullable=False)
+    question_ids = db.Column(db.JSON, nullable=False)  # ordered Question.id list; rows are never modified
+    # copied from the exam at snapshot time since they affect grading / the deadline
+    pass_percent = db.Column(db.Float, nullable=False)
+    duration_minutes = db.Column(db.Integer, nullable=False)
+    created_at = db.Column(db.DateTime, default=utcnow)
+
+    # one IN query, then reorder by question_ids since IN gives no order guarantee
+    @property
+    def questions(self):
+        rows = {q.id: q for q in Question.query.filter(Question.id.in_(self.question_ids))}
+        return [rows[i] for i in self.question_ids]
 
     @property
     def max_score(self):
@@ -46,8 +90,7 @@ class Question(db.Model):
     __tablename__ = "questions"
     id = db.Column(db.Integer, primary_key=True)
     exam_id = db.Column(db.Integer, db.ForeignKey("exams.id"), nullable=False)
-    position = db.Column(db.Integer, default=0)
-    text = db.Column(db.UnicodeText, nullable=False)
+    text = db.Column(db.UnicodeText, nullable=False)  # rows are insert-only, so ids stay stable across versions
     options = db.Column(db.JSON, nullable=False)  # ["option A", "option B", ...]
     correct = db.Column(db.JSON, nullable=False)  # indices into options, e.g. [0] or [0, 2]
     points = db.Column(db.Float, default=1)
@@ -63,6 +106,7 @@ class Submission(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     exam_id = db.Column(db.Integer, db.ForeignKey("exams.id"), nullable=False)
     student_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)
+    version_id = db.Column(db.Integer, db.ForeignKey("exam_versions.id"), nullable=False)  # pinned at start
     answers = db.Column(db.JSON, nullable=False)
     details = db.Column(db.JSON)
     score = db.Column(db.Float)
@@ -76,7 +120,8 @@ class Submission(db.Model):
     submitted_at = db.Column(db.DateTime, default=utcnow)
 
     student = db.relationship("User")
+    version = db.relationship("ExamVersion")
 
     @property
     def deadline(self):
-        return self.started_at + timedelta(minutes=self.exam.duration_minutes)
+        return self.started_at + timedelta(minutes=self.version.duration_minutes)

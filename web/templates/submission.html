@@ -42,7 +42,7 @@
   </div>
 
   <div class="qc-section-title mb-3">Review your answers</div>
-  {% for q in exam.questions %}
+  {% for q in questions %}
     {% set d = details.get(q.id) %}
     <div class="qc-card p-4 mb-3">
       <div class="d-flex gap-3">

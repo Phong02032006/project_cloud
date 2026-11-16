@@ -14,7 +14,7 @@ import grader_client
 from auth import bp as auth_bp
 from auth import login_required
 from config import Config
-from models import Exam, Question, Submission, db, utcnow
+from models import Exam, ExamVersion, Question, Submission, db, utcnow
 
 LETTERS = "ABCDEFGH"
 
@@ -142,12 +142,13 @@ def _finish_expired(app, subs):
 def _grade_and_save(app, sub):
     """Send a submission to the grader. Sync mode saves the result now; async mode leaves it pending
     until AWS calls back. Returns False if the grader could not be reached."""
-    exam = sub.exam
+    # grade against the version the student got, never the live exam
+    exam, version = sub.exam, sub.version
     payload = {
         "submission_id": sub.id,
         "student": {"name": sub.student.name, "email": sub.student.email},
-        "exam": {"id": exam.id, "title": exam.title, "pass_percent": exam.pass_percent},
-        "questions": [{"id": q.id, "points": q.points, "correct": q.correct} for q in exam.questions],
+        "exam": {"id": exam.id, "title": exam.title, "pass_percent": version.pass_percent},
+        "questions": [{"id": q.id, "points": q.points, "correct": q.correct} for q in version.questions],
         "answers": sub.answers,
     }
     try:
@@ -231,9 +232,11 @@ def register_routes(app):
         if not text or len(options) < 2 or not correct:
             flash("A question needs text, at least 2 options and at least 1 correct answer (on a filled-in option).", "danger")
         else:
-            db.session.add(Question(exam=exam, text=text, options=options, correct=correct,
-                                    points=max(0.0, request.form.get("points", 1, type=float)),
-                                    position=len(exam.questions)))
+            q = Question(exam=exam, text=text, options=options, correct=correct,
+                         points=max(0.0, request.form.get("points", 1, type=float)))
+            db.session.add(q)
+            db.session.flush()  # need q.id before snapshotting
+            exam.new_version([x.id for x in exam.questions] + [q.id])
             db.session.commit()
             flash("Question added.", "success")
         return redirect(url_for("exam_manage", exam_id=exam.id))
@@ -248,21 +251,24 @@ def register_routes(app):
             flash("Please choose a CSV file.", "danger")
             return redirect(url_for("exam_manage", exam_id=exam.id))
         reader = csv.DictReader(io.StringIO(file.read().decode("utf-8-sig")))
-        added, errors = 0, []
+        added, errors = [], []
         for line, row in enumerate(reader, start=2):
             try:
                 options = [row.get(k, "").strip() for k in "ABCD" if row.get(k, "").strip()]
                 if not row.get("question", "").strip() or len(options) < 2:
                     raise ValueError("missing question text or fewer than 2 options")
-                db.session.add(Question(exam=exam, text=row["question"].strip(), options=options,
-                                        correct=_parse_correct(row.get("correct", ""), len(options)),
-                                        points=float(row.get("points") or 1),
-                                        position=len(exam.questions)))
-                added += 1
+                added.append(Question(exam=exam, text=row["question"].strip(), options=options,
+                                      correct=_parse_correct(row.get("correct", ""), len(options)),
+                                      points=float(row.get("points") or 1)))
             except (ValueError, KeyError) as exc:
                 errors.append(f"line {line}: {exc}")
+        # whole import = one version
+        if added:
+            db.session.add_all(added)
+            db.session.flush()
+            exam.new_version([x.id for x in exam.questions] + [q.id for q in added])
         db.session.commit()
-        flash(f"Imported {added} question(s).", "success" if added else "warning")
+        flash(f"Imported {len(added)} question(s).", "success" if added else "warning")
         for e in errors[:10]:
             flash(e, "danger")
         return redirect(url_for("exam_manage", exam_id=exam.id))
@@ -271,14 +277,24 @@ def register_routes(app):
     @login_required("teacher")
     def question_delete(exam_id, qid):
         exam = _own_exam(exam_id)
-        q = db.get_or_404(Question, qid)
-        if q.exam_id != exam.id:
+        ids = [x.id for x in exam.questions]
+        if qid not in ids:
             abort(404)
-        if exam.submissions:
-            flash("Questions cannot be deleted once there are submissions.", "danger")
-        else:
-            db.session.delete(q)
-            db.session.commit()
+        # row stays, older versions may still point to it
+        exam.new_version([i for i in ids if i != qid])
+        db.session.commit()
+        return redirect(url_for("exam_manage", exam_id=exam.id))
+
+    @app.route("/teacher/exams/<int:exam_id>/versions/<int:version_id>/restore", methods=["POST"])
+    @login_required("teacher")
+    def version_restore(exam_id, version_id):
+        exam = _own_exam(exam_id)
+        version = db.get_or_404(ExamVersion, version_id)
+        if version.exam_id != exam.id:
+            abort(404)
+        exam.current_version = version  # ptr swap, nothing else changes
+        db.session.commit()
+        flash(f"Restored version {exam.versions.index(version) + 1}.", "success")
         return redirect(url_for("exam_manage", exam_id=exam.id))
 
     @app.route("/teacher/exams/<int:exam_id>/publish", methods=["POST"])
@@ -354,7 +370,9 @@ def register_routes(app):
         # get current attempt, if null -> start a new timed attempt
         sub = Submission.query.filter_by(exam_id=exam.id, student_id=g.user.id).first()
         if sub is None:
-            sub = Submission(exam_id=exam.id, student_id=g.user.id, answers={}, status="in_progress")
+            # pin the current version; this attempt reads only from it from now on
+            sub = Submission(exam_id=exam.id, student_id=g.user.id, version_id=exam.current_version_id,
+                             answers={}, status="in_progress")
             db.session.add(sub)
             db.session.commit()
         _finish_if_expired(app, sub) # if the attempt is ongoing but expired, submit right away
@@ -363,10 +381,11 @@ def register_routes(app):
         if request.method == "GET":
             # render the server side time on the web
             remaining = max(0, int((sub.deadline - utcnow()).total_seconds()))
-            return render_template("take_exam.html", exam=exam, remaining=remaining)
+            return render_template("take_exam.html", exam=exam, questions=sub.version.questions,
+                                   remaining=remaining)
 
         answers = {str(q.id): [int(v) for v in request.form.getlist(f"q{q.id}") if v.isdigit()]
-                   for q in exam.questions}
+                   for q in sub.version.questions}
         if _claim(sub, answers=answers) and not _grade_and_save(app, sub):
             flash("Your answers were saved but grading failed. Click 'Regrade' or contact your teacher.", "danger")
         return redirect(url_for("submission_view", sub_id=sub.id))
@@ -387,7 +406,8 @@ def register_routes(app):
             except Exception:
                 app.logger.exception("presign failed")
         details = {d["question_id"]: d for d in (sub.details or [])}
-        return render_template("submission.html", sub=sub, exam=sub.exam, details=details, cert_url=cert_url,
+        return render_template("submission.html", sub=sub, exam=sub.exam, questions=sub.version.questions,
+                               details=details, cert_url=cert_url,
                                stuck=_is_stuck(sub))
 
     @app.route("/submissions/<int:sub_id>/status")

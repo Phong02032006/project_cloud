@@ -6,7 +6,7 @@
     <div class="fw-bold">{{ exam.title }}</div>
     <div class="d-flex align-items-center gap-2 mt-1">
       <div class="qc-progress flex-grow-1" style="max-width:320px"><span id="progress-bar" style="width:0%"></span></div>
-      <span class="small text-secondary"><span id="answered">0</span>/{{ exam.questions|length }} answered</span>
+      <span class="small text-secondary"><span id="answered">0</span>/{{ questions|length }} answered</span>
     </div>
   </div>
   <span class="qc-timer" id="timer-box"><i class="bi bi-stopwatch"></i> <span id="timer"></span></span>
@@ -16,7 +16,7 @@
   <input type="hidden" name="csrf" value="{{ csrf_token() }}">
   <div class="row g-4">
     <div class="col-lg-9">
-      {% for q in exam.questions %}
+      {% for q in questions %}
         <div class="qc-card p-4 mb-3" id="card-{{ q.id }}" style="scroll-margin-top:160px">
           <div class="d-flex gap-3 mb-3">
             <div class="qc-q-num">{{ loop.index }}</div>
@@ -39,7 +39,7 @@
       <div class="qc-card p-4" style="position:sticky;top:180px">
         <div class="qc-section-title mb-3">Questions</div>
         <div class="qc-nav-grid mb-4">
-          {% for q in exam.questions %}<a href="#card-{{ q.id }}" id="nav-{{ q.id }}">{{ loop.index }}</a>{% endfor %}
+          {% for q in questions %}<a href="#card-{{ q.id }}" id="nav-{{ q.id }}">{{ loop.index }}</a>{% endfor %}
         </div>
         <button class="btn btn-primary w-100 btn-lg" onclick="return confirm('Submit your answers? You can only submit once.')"><i class="bi bi-send-check"></i> Submit</button>
         <p class="small text-secondary mt-3 mb-0"><i class="bi bi-info-circle"></i> Your answers are submitted automatically when time runs out.</p>
@@ -50,7 +50,7 @@
 {% endblock %}
 {% block scripts %}
 <script>
-  const total = {{ exam.questions|length }};
+  const total = {{ questions|length }};
   const updateProgress = () => {
     const answered = new Set([...document.querySelectorAll("#exam-form input[data-q]:checked")].map(i => i.dataset.q));
     document.querySelectorAll(".qc-nav-grid a").forEach(a => a.classList.toggle("done", answered.has(a.id.slice(4))));

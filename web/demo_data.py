@@ -53,9 +53,12 @@ def seed_demo(app, grade_fn):
     for spec in EXAMS:
         exam = Exam(title=spec["title"], description=spec["description"], duration_minutes=spec["duration"],
                     pass_percent=spec["pass"], published=spec["published"], teacher=teacher)
-        for i, (text, opts, correct) in enumerate(spec["questions"]):
-            exam.questions.append(Question(text=text, options=opts, correct=correct, points=1, position=i))
+        rows = [Question(exam=exam, text=text, options=opts, correct=correct, points=1)
+                for text, opts, correct in spec["questions"]]
         db.session.add(exam)
+        db.session.add_all(rows)
+        db.session.flush()
+        exam.new_version([q.id for q in rows])
         exams.append(exam)
     db.session.commit()
 
@@ -74,7 +77,8 @@ def seed_demo(app, grade_fn):
                     answers[str(q.id)] = list(q.correct)
                 else:
                     answers[str(q.id)] = [rng.randrange(len(q.options))]
-            sub = Submission(exam_id=exam.id, student_id=student.id, answers=answers)
+            sub = Submission(exam_id=exam.id, student_id=student.id, version_id=exam.current_version_id,
+                             answers=answers)
             db.session.add(sub)
             db.session.commit()
             grade_fn(sub)
