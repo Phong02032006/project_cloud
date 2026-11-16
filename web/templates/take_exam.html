@@ -44,7 +44,7 @@
 </style>
 {% endif %}
 
-<form method="post" id="exam-form">
+<form method="post" id="exam-form" data-confirm="Submit your answers? You can only submit once.">
   <input type="hidden" name="csrf" value="{{ csrf_token() }}">
   <div class="row g-4">
     <div class="col-lg-9">
@@ -73,7 +73,7 @@
         <div class="qc-nav-grid mb-4">
           {% for q in questions %}<a href="#card-{{ q.id }}" id="nav-{{ q.id }}">{{ loop.index }}</a>{% endfor %}
         </div>
-        <button class="btn btn-primary w-100 btn-lg" onclick="return confirm('Submit your answers? You can only submit once.')"><i class="bi bi-send-check"></i> Submit</button>
+        <button class="btn btn-primary w-100 btn-lg"><i class="bi bi-send-check"></i> Submit</button>
         <p class="small text-secondary mt-3 mb-0"><i class="bi bi-info-circle"></i> Your answers are submitted automatically when time runs out.</p>
       </div>
     </div>

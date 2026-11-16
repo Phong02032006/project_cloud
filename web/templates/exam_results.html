@@ -104,7 +104,7 @@
           ${a.violations ? `<span class="qc-chip danger">${a.violations} violation${a.violations === 1 ? "" : "s"}</span>` : ""}
           ${a.locked ? `<span class="qc-chip warning">waiting: ${esc(LABELS[a.lock_reason] || a.lock_reason)}</span>
                         <button class="btn btn-sm btn-primary" onclick="qcAct(${a.id}, 'approve')">Approve</button>` : ""}
-          <button class="btn btn-sm btn-ghost text-danger" onclick="if (confirm('Submit this attempt now?')) qcAct(${a.id}, 'force-submit')">Force submit</button>
+          <button class="btn btn-sm btn-ghost text-danger" onclick="qcConfirm('Submit this attempt now?').then(ok => ok && qcAct(${a.id}, 'force-submit'))">Force submit</button>
         </div>`).join("") : "No attempts in progress.";
       document.getElementById("live-events").innerHTML = d.events.map(e => `
         <div class="py-1 ${e.counted ? "text-danger" : "text-secondary"}">${e.at} · <b>${esc(e.student)}</b> ${esc(LABELS[e.type] || e.type)}

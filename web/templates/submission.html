@@ -16,11 +16,11 @@
   {% if sub.review == 'withheld' and sub.status == 'graded' %}
   <div class="alert alert-warning d-flex flex-wrap align-items-center gap-2">
     <div class="flex-grow-1">The score and certificate are hidden from the student until you decide.</div>
-    <form method="post" action="{{ url_for('attempt_release', sub_id=sub.id) }}" class="m-0" onsubmit="return confirm('Release the result and issue the certificate?')">
+    <form method="post" action="{{ url_for('attempt_release', sub_id=sub.id) }}" class="m-0" data-confirm="Release the result and issue the certificate?">
       <input type="hidden" name="csrf" value="{{ csrf_token() }}">
       <button class="btn btn-primary btn-sm"><i class="bi bi-unlock"></i> Release</button>
     </form>
-    <form method="post" action="{{ url_for('attempt_cancel', sub_id=sub.id) }}" class="m-0" onsubmit="return confirm('Cancel the certificate? The student will be emailed.')">
+    <form method="post" action="{{ url_for('attempt_cancel', sub_id=sub.id) }}" class="m-0" data-confirm="Cancel the certificate? The student will be emailed.">
       <input type="hidden" name="csrf" value="{{ csrf_token() }}">
       <button class="btn btn-ghost text-danger btn-sm"><i class="bi bi-x-octagon"></i> Cancel certificate</button>
     </form>
