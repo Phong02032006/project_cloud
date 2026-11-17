@@ -121,6 +121,11 @@
             <div class="fw-semibold">{{ q.text }}</div>
             {% if d %}<span class="qc-chip {{ 'success' if d.is_correct else 'danger' }} text-nowrap">{{ d.earned|num }}/{{ d.points|num }} pt</span>{% endif %}
           </div>
+          {% if q.image_url %}
+            <div class="mb-3">
+              <img src="{{ q.image_url }}" alt="Question image" class="img-fluid rounded border" style="max-height: 320px; object-fit: contain;">
+            </div>
+          {% endif %}
           {% for opt in q.options %}
             {% set chosen = d and loop.index0 in d.chosen %}
             {% set is_correct = loop.index0 in q.correct %}

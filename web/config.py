@@ -21,3 +21,13 @@ class Config:
     # true = queue submissions on SQS and receive results via /api/grader/callback (needs GRADER_URL).
     GRADER_ASYNC = os.environ.get("GRADER_ASYNC", "").lower() in ("1", "true", "yes")
     LOCAL_CERT_DIR = os.environ.get("LOCAL_CERT_DIR", "")
+
+    # Optional: Azure Blob Storage for question images.
+    AZURE_STORAGE_CONNECTION_STRING = os.environ.get("AZURE_STORAGE_CONNECTION_STRING", "")
+    AZURE_STORAGE_CONTAINER = os.environ.get("AZURE_STORAGE_CONTAINER", "question-images")
+
+    # Optional: Azure OpenAI for automatic MCQ generation.
+    AZURE_OPENAI_ENDPOINT = os.environ.get("AZURE_OPENAI_ENDPOINT", "")
+    AZURE_OPENAI_API_KEY = os.environ.get("AZURE_OPENAI_API_KEY", "")
+    AZURE_OPENAI_DEPLOYMENT = os.environ.get("AZURE_OPENAI_DEPLOYMENT", "gpt-4o-mini")
+    AZURE_OPENAI_API_VERSION = os.environ.get("AZURE_OPENAI_API_VERSION", "2024-10-21")

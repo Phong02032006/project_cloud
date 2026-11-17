@@ -122,6 +122,7 @@ class Question(db.Model):
     options = db.Column(db.JSON, nullable=False)  # ["option A", "option B", ...]
     correct = db.Column(db.JSON, nullable=False)  # indices into options, e.g. [0] or [0, 2]
     points = db.Column(db.Float, default=1)
+    image_url = db.Column(db.String(500), nullable=True)
 
     @property
     def is_multi(self):
