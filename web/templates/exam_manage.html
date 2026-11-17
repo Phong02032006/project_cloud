@@ -56,6 +56,13 @@
                 <span class="qc-chip">{{ q.points|num }} pt</span>
               </div>
             </div>
+            {% if q.image_url %}
+              <div class="mt-2">
+                <a href="{{ q.image_url }}" target="_blank" rel="noopener" title="View full image">
+                  <img src="{{ q.image_url }}" alt="Question illustration" class="img-thumbnail rounded" style="max-height: 140px; max-width: 240px; object-fit: contain;">
+                </a>
+              </div>
+            {% endif %}
             <div class="mt-3">
               {% for opt in q.options %}
                 <div class="qc-review-opt {{ 'correct' if loop.index0 in q.correct }}">
@@ -79,9 +86,13 @@
   <div class="col-lg-5">
     <div class="qc-card p-4 mb-4">
       <h5 class="mb-3"><i class="bi bi-plus-circle text-primary"></i> Add a question</h5>
-      <form method="post" action="{{ url_for('question_add', exam_id=exam.id) }}" class="js-edit">
+      <form method="post" action="{{ url_for('question_add', exam_id=exam.id) }}" enctype="multipart/form-data" class="js-edit">
         <input type="hidden" name="csrf" value="{{ csrf_token() }}">
-        <textarea name="text" class="form-control mb-3" rows="2" placeholder="Type the question..." required></textarea>
+        <textarea name="text" class="form-control mb-2" rows="2" placeholder="Type the question..." required></textarea>
+        <div class="mb-3">
+          <label class="form-label small text-secondary mb-1"><i class="bi bi-image"></i> Illustration image (optional, max 5MB)</label>
+          <input type="file" name="image" accept="image/*" class="form-control form-control-sm">
+        </div>
         {% for i in range(4) %}
           <div class="qc-option-input">
             <input class="form-check-input" type="checkbox" name="correct" value="{{ i }}" title="Mark as correct answer">
@@ -100,6 +111,18 @@
         <input type="hidden" name="csrf" value="{{ csrf_token() }}">
         <input type="file" name="file" accept=".csv" class="form-control mb-2" required>
         <button class="btn btn-soft w-100"><i class="bi bi-upload"></i> Import file</button>
+      </form>
+      <div class="qc-divider">or</div>
+      <h6 class="mb-2"><i class="bi bi-stars text-primary"></i> Generate questions with Azure AI</h6>
+      <p class="small text-secondary mb-2">Paste your lesson notes or study material and let Azure OpenAI generate multiple-choice questions automatically.</p>
+      <form method="post" action="{{ url_for('question_generate_ai', exam_id=exam.id) }}" class="js-edit" id="ai-generate-form">
+        <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+        <textarea name="lesson_text" class="form-control mb-2" rows="5" placeholder="Dán nội dung bài giảng, tóm tắt chương học hoặc tài liệu vào đây..." required></textarea>
+        <div class="input-group mb-3">
+          <span class="input-group-text">Questions</span>
+          <input name="num_questions" type="number" min="1" max="15" value="5" class="form-control" required>
+        </div>
+        <button type="submit" class="btn btn-primary w-100" id="ai-generate-btn"><i class="bi bi-magic"></i> Generate with AI</button>
       </form>
     </div>
     {% set p = exam.settings %}
@@ -167,6 +190,16 @@
   const impact = document.getElementById("edit-impact");
   if (impact) {
     document.querySelectorAll("form.js-edit").forEach(f => f.dataset.confirm = impact.dataset.confirm);
+  }
+  const aiForm = document.getElementById("ai-generate-form");
+  if (aiForm) {
+    aiForm.addEventListener("submit", () => {
+      const btn = document.getElementById("ai-generate-btn");
+      if (btn) {
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true"></span> Generating with AI...';
+      }
+    });
   }
 </script>
 {% endblock %}

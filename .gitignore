@@ -2,5 +2,6 @@
 __pycache__/
 .pytest_cache/
 web/instance/
+web/static/uploads/
 grader/grader.zip
 grader/build/

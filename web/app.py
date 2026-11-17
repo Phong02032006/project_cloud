@@ -8,12 +8,14 @@ from datetime import datetime, timedelta
 import click
 from flask import (Flask, Response, abort, flash, g, jsonify, redirect, render_template, request, send_file,
                    session, url_for)
-from sqlalchemy import exists, update
+from sqlalchemy import exists, inspect, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import aliased
 from werkzeug.middleware.proxy_fix import ProxyFix
 
+import ai_generator
 import grader_client
+import storage_client
 from auth import bp as auth_bp
 from auth import login_required
 from config import Config
@@ -21,6 +23,21 @@ from models import (DEFAULT_POLICY, AttemptEvent, Certificate, Exam, ExamVersion
                     User, db, utcnow)
 
 LETTERS = "ABCDEFGH"
+
+
+def _ensure_schema(app):
+    """Safely add questions.image_url on existing SQLite or Azure SQL databases without losing data."""
+    with app.app_context():
+        try:
+            inspector = inspect(db.engine)
+            if inspector.has_table("questions"):
+                cols = {c["name"] for c in inspector.get_columns("questions")}
+                if "image_url" not in cols:
+                    db.session.execute(text("ALTER TABLE questions ADD image_url VARCHAR(500) NULL"))
+                    db.session.commit()
+        except Exception:
+            db.session.rollback()
+            app.logger.warning("Auto-migration for questions.image_url skipped", exc_info=True)
 
 
 def create_app(overrides=None):
@@ -33,6 +50,7 @@ def create_app(overrides=None):
     # App Service terminates TLS at its front end; trust X-Forwarded-* so redirect URIs use https.
     app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
     db.init_app(app)
+    _ensure_schema(app)
     app.register_blueprint(auth_bp)
     register_security(app)
     register_routes(app)
@@ -411,13 +429,65 @@ def register_routes(app):
         if not text or len(options) < 2 or not correct:
             flash("A question needs text, at least 2 options and at least 1 correct answer (on a filled-in option).", "danger")
         else:
+            image_url = None
+            image_file = request.files.get("image")
+            if image_file and image_file.filename:
+                try:
+                    image_url = storage_client.upload_question_image(image_file)
+                except ValueError as exc:
+                    flash(str(exc), "danger")
+                    return redirect(url_for("exam_manage", exam_id=exam.id))
+                except Exception:
+                    app.logger.exception("failed to upload question image")
+                    flash("Could not upload the question image. Please check storage settings.", "danger")
+                    return redirect(url_for("exam_manage", exam_id=exam.id))
             q = Question(exam=exam, text=text, options=options, correct=correct,
-                         points=max(0.0, request.form.get("points", 1, type=float)))
+                         points=max(0.0, request.form.get("points", 1, type=float)),
+                         image_url=image_url)
             db.session.add(q)
             db.session.flush()  # need q.id before snapshotting
             exam.new_version([x.id for x in exam.questions] + [q.id])
             db.session.commit()
             flash("Question added.", "success")
+        return redirect(url_for("exam_manage", exam_id=exam.id))
+
+    @app.route("/teacher/exams/<int:exam_id>/generate-ai", methods=["POST"])
+    @login_required("teacher")
+    def question_generate_ai(exam_id):
+        exam = _own_exam(exam_id)
+        lesson_text = request.form.get("lesson_text", "").strip()
+        num_questions = request.form.get("num_questions", 5, type=int)
+        if not lesson_text:
+            flash("Please enter lesson content to generate questions.", "danger")
+            return redirect(url_for("exam_manage", exam_id=exam.id))
+        try:
+            generated = ai_generator.generate_mcqs_from_text(lesson_text, num_questions=num_questions)
+        except Exception as exc:
+            app.logger.exception("AI question generation failed")
+            flash(f"Failed to generate questions with AI: {exc}", "danger")
+            return redirect(url_for("exam_manage", exam_id=exam.id))
+
+        added = []
+        for item in generated:
+            try:
+                options = [str(item.get(k, "")).strip() for k in "ABCD" if str(item.get(k, "")).strip()]
+                q_text = str(item.get("question", "")).strip()
+                if not q_text or len(options) < 2:
+                    continue
+                correct = _parse_correct(str(item.get("correct", "A")), len(options))
+                points = max(0.0, float(item.get("points") or 1))
+                added.append(Question(exam=exam, text=q_text, options=options, correct=correct, points=points))
+            except (ValueError, TypeError):
+                continue
+
+        if added:
+            db.session.add_all(added)
+            db.session.flush()
+            exam.new_version([x.id for x in exam.questions] + [q.id for q in added])
+            db.session.commit()
+            flash(f"Generated and added {len(added)} question(s) with Azure AI.", "success")
+        else:
+            flash("AI did not return any valid questions. Please try again with clearer lesson text.", "warning")
         return redirect(url_for("exam_manage", exam_id=exam.id))
 
     @app.route("/teacher/exams/<int:exam_id>/import", methods=["POST"])
@@ -1050,6 +1120,7 @@ def register_cli(app):
     def init_db(demo):
         """Create tables (works on SQLite and Azure SQL)."""
         db.create_all()
+        _ensure_schema(app)
         click.echo("Tables created.")
         if demo:
             from demo_data import seed_demo
