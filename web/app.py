@@ -1025,6 +1025,24 @@ def register_routes(app):
     def not_found(_):
         return render_template("error.html", code=404, message="Page not found."), 404
 
+    @app.errorhandler(500)
+    def server_error(e):
+        import traceback
+        tb = traceback.format_exc()
+        app.logger.error("500 Internal Server Error: %s\n%s", e, tb)
+        return render_template("error.html", code=500, message=f"Internal Error: {e}\n\n{tb}"), 500
+
+    @app.route("/api/debug-db")
+    def debug_db():
+        try:
+            db.create_all()
+            from models import User
+            count = User.query.count()
+            return jsonify(status="ok", message="Database connected and tables verified", user_count=count)
+        except Exception as e:
+            import traceback
+            return jsonify(status="error", error=str(e), traceback=traceback.format_exc()), 500
+
 
 def register_cli(app):
     @app.cli.command("init-db")
