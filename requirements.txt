@@ -6,3 +6,5 @@ requests==2.32.3
 gunicorn==23.0.0
 pymssql==2.3.2
 fpdf2==2.8.2
+azure-storage-blob>=12.19.0
+openai>=1.40.0
