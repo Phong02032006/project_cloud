@@ -91,6 +91,8 @@ def generate_mcqs_from_text(lesson_text: str, num_questions: int = 5) -> list[di
         raise ValueError("Lesson text cannot be empty.")
 
     endpoint = _cfg("AZURE_OPENAI_ENDPOINT")
+    if endpoint:
+        endpoint = re.sub(r"/openai(/v1)?/?$", "", endpoint.rstrip("/"))
     api_key = _cfg("AZURE_OPENAI_API_KEY")
     deployment = _cfg("AZURE_OPENAI_DEPLOYMENT", "gpt-4.1-mini") or "gpt-4.1-mini"
     api_version = _cfg("AZURE_OPENAI_API_VERSION", "2024-10-21") or "2024-10-21"
