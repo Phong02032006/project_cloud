@@ -11,10 +11,17 @@ bp = Blueprint("auth", __name__)
 ROLES = ("teacher", "student")
 
 
+def _get_authority():
+    authority = current_app.config.get("ENTRA_AUTHORITY", "").strip()
+    if authority and not authority.startswith("http"):
+        authority = f"https://login.microsoftonline.com/{authority}"
+    return authority
+
+
 def _msal_app():
     cfg = current_app.config
     return msal.ConfidentialClientApplication(
-        cfg["ENTRA_CLIENT_ID"], authority=cfg["ENTRA_AUTHORITY"], client_credential=cfg["ENTRA_CLIENT_SECRET"]
+        cfg["ENTRA_CLIENT_ID"], authority=_get_authority(), client_credential=cfg["ENTRA_CLIENT_SECRET"]
     )
 
 
@@ -114,7 +121,7 @@ def logout():
     if csrf:
         session["csrf"] = csrf
     if current_app.config["AUTH_MODE"] == "entra":
-        authority = current_app.config["ENTRA_AUTHORITY"].rstrip("/")
+        authority = _get_authority().rstrip("/")
         return redirect(
             f"{authority}/oauth2/v2.0/logout?post_logout_redirect_uri={url_for('index', _external=True)}"
         )
