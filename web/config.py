@@ -1,10 +1,23 @@
 import os
+import re
+
+
+def _fix_database_url(url):
+    if not url:
+        return "sqlite:///quiz.db"
+    # Azure SQL via pymssql requires username@servername if not already provided
+    m = re.match(r"^(mssql\+pymssql://)([^:@]+)(:[^@]+@)([^.]+)(\.database\.windows\.net.*)$", url)
+    if m:
+        prefix, user, pass_at, server, rest = m.groups()
+        if "@" not in user and "%40" not in user:
+            return f"{prefix}{user}%40{server}{pass_at}{server}{rest}"
+    return url
 
 
 class Config:
     SECRET_KEY = os.environ.get("SECRET_KEY", "dev-secret-change-me")
     # Local: SQLite. Azure: mssql+pymssql://USER:PASSWORD@SERVER.database.windows.net:1433/DBNAME
-    SQLALCHEMY_DATABASE_URI = os.environ.get("DATABASE_URL", "sqlite:///quiz.db")
+    SQLALCHEMY_DATABASE_URI = _fix_database_url(os.environ.get("DATABASE_URL", "sqlite:///quiz.db"))
     # pool_pre_ping matters for Azure SQL serverless (free offer), which auto-pauses and drops idle connections.
     SQLALCHEMY_ENGINE_OPTIONS = {"pool_pre_ping": True, "pool_recycle": 280}
 
