@@ -42,5 +42,5 @@ class Config:
     # Optional: Azure OpenAI for automatic MCQ generation.
     AZURE_OPENAI_ENDPOINT = os.environ.get("AZURE_OPENAI_ENDPOINT", "")
     AZURE_OPENAI_API_KEY = os.environ.get("AZURE_OPENAI_API_KEY", "")
-    AZURE_OPENAI_DEPLOYMENT = os.environ.get("AZURE_OPENAI_DEPLOYMENT", "gpt-4o-mini")
+    AZURE_OPENAI_DEPLOYMENT = os.environ.get("AZURE_OPENAI_DEPLOYMENT", "gpt-4.1-mini")
     AZURE_OPENAI_API_VERSION = os.environ.get("AZURE_OPENAI_API_VERSION", "2024-10-21")

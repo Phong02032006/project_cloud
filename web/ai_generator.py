@@ -92,7 +92,7 @@ def generate_mcqs_from_text(lesson_text: str, num_questions: int = 5) -> list[di
 
     endpoint = _cfg("AZURE_OPENAI_ENDPOINT")
     api_key = _cfg("AZURE_OPENAI_API_KEY")
-    deployment = _cfg("AZURE_OPENAI_DEPLOYMENT", "gpt-4o-mini") or "gpt-4o-mini"
+    deployment = _cfg("AZURE_OPENAI_DEPLOYMENT", "gpt-4.1-mini") or "gpt-4.1-mini"
     api_version = _cfg("AZURE_OPENAI_API_VERSION", "2024-10-21") or "2024-10-21"
 
     if not (endpoint and api_key):
