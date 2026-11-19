@@ -1,13 +1,13 @@
 """Sample data for demos/video: a teacher, several exams and graded submissions from a few students."""
 import random
 
-from models import Exam, Question, Submission, User, db
+from models import Exam, Question, QuizAssignment, Submission, User, db
 
 EXAMS = [
     {
         "title": "Cloud Computing - Midterm Quiz",
         "description": "Fundamentals of AWS, Azure and cloud service models.",
-        "duration": 15, "pass": 50, "published": True,
+        "duration": 15, "pass": 50, "published": True, "visibility": "public", "access_code": None,
         "questions": [
             ("Which AWS service is used for object storage?", ["Amazon EC2", "Amazon S3", "Amazon RDS", "AWS Lambda"], [1]),
             ("What is Microsoft Entra ID used for?", ["File storage", "Identity & access management", "Running containers", "Sending email"], [1]),
@@ -20,7 +20,7 @@ EXAMS = [
     {
         "title": "Cloud Security Basics",
         "description": "IAM, encryption and the principle of least privilege.",
-        "duration": 10, "pass": 60, "published": True,
+        "duration": 10, "pass": 60, "published": True, "visibility": "private", "access_code": "QC842A",
         "policy": {"managed": True, "withhold_if_flagged": True, "autosubmit_after": 5},
         "questions": [
             ("What does the 'least privilege' principle mean?", ["Give admins full access", "Grant only the minimum permissions needed", "Never use passwords", "Turn off logging"], [1]),
@@ -32,7 +32,7 @@ EXAMS = [
     {
         "title": "Course Satisfaction Survey",
         "description": "Draft - not yet published to students.",
-        "duration": 5, "pass": 0, "published": False,
+        "duration": 5, "pass": 0, "published": False, "visibility": "private", "access_code": "QC910B",
         "questions": [
             ("How useful did you find this course?", ["Very useful", "Useful", "Neutral", "Not useful"], [0, 1, 2, 3]),
         ],
@@ -53,8 +53,9 @@ def seed_demo(app, grade_fn):
     exams = []
     for spec in EXAMS:
         exam = Exam(title=spec["title"], description=spec["description"], duration_minutes=spec["duration"],
-                    pass_percent=spec["pass"], published=spec["published"], teacher=teacher,
-                    policy=spec.get("policy"))
+                    pass_percent=spec["pass"], published=spec["published"],
+                    visibility=spec.get("visibility", "private"), access_code=spec.get("access_code"),
+                    teacher=teacher, policy=spec.get("policy"))
         rows = [Question(exam=exam, text=text, options=opts, correct=correct, points=1)
                 for text, opts, correct in spec["questions"]]
         db.session.add(exam)
@@ -68,6 +69,7 @@ def seed_demo(app, grade_fn):
         email = f"student{idx + 1}@demo.local"
         student = User(external_id=f"dev:{email}", name=name, email=email, role="student")
         db.session.add(student)
+        db.session.add(QuizAssignment(quiz_id=exams[1].id, student_email=email, assigned_by=teacher.id))
         db.session.commit()
         for exam in exams[:2]:
             if exam is exams[1] and idx % 2:

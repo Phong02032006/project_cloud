@@ -61,36 +61,42 @@
     <thead><tr><th>Student</th><th>Attempt</th><th>Score</th><th style="width:22%">Percent</th><th>Result</th><th>Integrity</th><th>Updated / Submitted (UTC)</th><th></th></tr></thead>
     <tbody id="submissions-tbody">
     {% for s in submissions %}
-      {% set answered_count = (s.answers or {}).values()|select|list|length %}
-      {% set total_q = s.version.question_ids|length if s.version else 0 %}
-      <tr>
-        <td><div class="d-flex align-items-center"><span class="qc-mini-avatar">{{ s.student.name|initial }}</span>
-          <div><div class="fw-semibold">{{ s.student.name }}</div><div class="small text-secondary">{{ s.student.email }}</div></div></div></td>
-        <td class="text-nowrap">#{{ s.attempt_no }}{% if s.selected %} <span class="qc-chip success">Counts</span>{% endif %}</td>
-        {% if s.status == 'graded' %}
-          <td class="fw-bold">{{ s.score|num }}/{{ s.max_score|num }}</td>
-          <td><div class="d-flex align-items-center gap-2"><div class="qc-progress flex-grow-1"><span style="width: {{ s.percent }}%"></span></div><span class="small fw-semibold">{{ s.percent|num }}%</span></div></td>
-          <td>{% if s.passed %}<span class="qc-chip success"><i class="bi bi-check-circle-fill"></i> Passed</span>{% else %}<span class="qc-chip danger"><i class="bi bi-x-circle-fill"></i> Failed</span>{% endif %}</td>
-        {% elif s.status == 'in_progress' %}
-          <td colspan="3">
-            <div class="d-flex align-items-center gap-2 flex-wrap">
-              <span class="qc-chip info">In progress</span>
-              <span class="small text-secondary">{{ answered_count }}/{{ total_q }} answered</span>
-            </div>
-          </td>
+      <tr data-student-email="{{ (s.email or '')|lower }}">
+        <td><div class="d-flex align-items-center"><span class="qc-mini-avatar">{{ s.initial }}</span>
+          <div><div class="fw-semibold">{{ s.name }}</div><div class="small text-secondary">{{ s.email }}</div></div></div></td>
+        {% if s.status == 'not_started' %}
+          <td class="text-secondary">—</td>
+          <td colspan="3"><span class="qc-chip muted"><i class="bi bi-hourglass"></i> Chưa vào thi</span></td>
+          <td class="text-secondary small">—</td>
+          <td class="small text-secondary">Chưa vào thi</td>
+          <td class="text-end"></td>
         {% else %}
-          <td colspan="3"><span class="qc-chip warning"><i class="bi bi-exclamation-triangle"></i> {{ 'Grading error' if s.status == 'error' else 'Grading...' }}</span></td>
+          <td class="text-nowrap">#{{ s.attempt_no }}{% if s.selected %} <span class="qc-chip success">Counts</span>{% endif %}</td>
+          {% if s.status == 'graded' %}
+            <td class="fw-bold">{{ s.score|num }}/{{ s.max_score|num }}</td>
+            <td><div class="d-flex align-items-center gap-2"><div class="qc-progress flex-grow-1"><span style="width: {{ s.percent }}%"></span></div><span class="small fw-semibold">{{ s.percent|num }}%</span></div></td>
+            <td>{% if s.passed %}<span class="qc-chip success"><i class="bi bi-check-circle-fill"></i> Đã nộp · Passed</span>{% else %}<span class="qc-chip danger"><i class="bi bi-x-circle-fill"></i> Đã nộp · Failed</span>{% endif %}</td>
+          {% elif s.status == 'in_progress' %}
+            <td colspan="3">
+              <div class="d-flex align-items-center gap-2 flex-wrap">
+                <span class="qc-chip info">Đang làm (In progress)</span>
+                <span class="small text-secondary">{{ s.answered_count }}/{{ s.total_questions }} answered</span>
+              </div>
+            </td>
+          {% else %}
+            <td colspan="3"><span class="qc-chip warning"><i class="bi bi-exclamation-triangle"></i> {{ 'Grading error' if s.status == 'error' else 'Grading...' }}</span></td>
+          {% endif %}
+          <td>
+            {% if s.violations %}<span class="qc-chip danger"><i class="bi bi-flag-fill"></i> {{ s.violations|plural("violation") }}</span>
+            {% elif s.managed %}<span class="qc-chip success"><i class="bi bi-shield-check"></i> Clean</span>{% endif %}
+            {% if s.review %}<span class="qc-chip {{ 'warning' if s.review == 'withheld' else 'muted' }}">{{ s.review|capitalize }}</span>{% endif %}
+          </td>
+          <td class="small text-secondary">{{ ('Updated ' ~ s.updated_at) if s.status == 'in_progress' else s.submitted_at }}</td>
+          <td class="text-end text-nowrap"><a href="{{ s.details_url }}" class="btn btn-sm btn-ghost">Details <i class="bi bi-chevron-right"></i></a>
+            {% if s.is_last_for_student %}
+              <a href="{{ s.retake_url }}" class="btn btn-sm btn-ghost">{% if s.has_ticket %}<span class="qc-chip info">Retake granted</span>{% else %}<i class="bi bi-arrow-counterclockwise"></i> Retake{% endif %}</a>
+            {% endif %}</td>
         {% endif %}
-        <td>
-          {% if s.violations %}<span class="qc-chip danger"><i class="bi bi-flag-fill"></i> {{ s.violations|plural("violation") }}</span>
-          {% elif s.version.settings.managed %}<span class="qc-chip success"><i class="bi bi-shield-check"></i> Clean</span>{% endif %}
-          {% if s.review %}<span class="qc-chip {{ 'warning' if s.review == 'withheld' else 'muted' }}">{{ s.review|capitalize }}</span>{% endif %}
-        </td>
-        <td class="small text-secondary">{{ (s.last_seen_at or s.started_at).strftime('%H:%M:%S') if s.status == 'in_progress' else s.submitted_at.strftime('%b %d, %Y %H:%M') }}</td>
-        <td class="text-end text-nowrap"><a href="{{ url_for('submission_view', sub_id=s.id) }}" class="btn btn-sm btn-ghost">Details <i class="bi bi-chevron-right"></i></a>
-          {% if loop.last or loop.nextitem.student_id != s.student_id %}
-            <a href="{{ url_for('ticket_grant', exam_id=exam.id, student_id=s.student_id) }}" class="btn btn-sm btn-ghost">{% if tickets.get(s.student_id) %}<span class="qc-chip info">Retake granted</span>{% else %}<i class="bi bi-arrow-counterclockwise"></i> Retake{% endif %}</a>
-          {% endif %}</td>
       </tr>
     {% else %}
       <tr><td colspan="8"><div class="qc-empty"><i class="bi bi-inbox"></i>No submissions yet.</div></td></tr>
@@ -158,12 +164,24 @@
         return;
       }
       tbody.innerHTML = subs.map(s => {
+        if (s.status === "not_started") {
+          return `
+            <tr data-student-email="${esc((s.email || "").toLowerCase())}">
+              <td><div class="d-flex align-items-center"><span class="qc-mini-avatar">${esc(s.initial)}</span>
+                <div><div class="fw-semibold">${esc(s.name)}</div><div class="small text-secondary">${esc(s.email)}</div></div></div></td>
+              <td class="text-secondary">—</td>
+              <td colspan="3"><span class="qc-chip muted"><i class="bi bi-hourglass"></i> Chưa vào thi</span></td>
+              <td class="text-secondary small">—</td>
+              <td class="small text-secondary">Chưa vào thi</td>
+              <td class="text-end"></td>
+            </tr>`;
+        }
         let midCols = "";
         if (s.status === "graded") {
           const pct = fmtNum(s.percent);
           const resChip = s.passed
-            ? '<span class="qc-chip success"><i class="bi bi-check-circle-fill"></i> Passed</span>'
-            : '<span class="qc-chip danger"><i class="bi bi-x-circle-fill"></i> Failed</span>';
+            ? '<span class="qc-chip success"><i class="bi bi-check-circle-fill"></i> Đã nộp · Passed</span>'
+            : '<span class="qc-chip danger"><i class="bi bi-x-circle-fill"></i> Đã nộp · Failed</span>';
           midCols = `
             <td class="fw-bold">${fmtNum(s.score)}/${fmtNum(s.max_score)}</td>
             <td><div class="d-flex align-items-center gap-2"><div class="qc-progress flex-grow-1"><span style="width: ${Number(s.percent) || 0}%"></span></div><span class="small fw-semibold">${pct}%</span></div></td>
@@ -175,7 +193,7 @@
           midCols = `
             <td colspan="3">
               <div class="d-flex align-items-center gap-2 flex-wrap">
-                <span class="qc-chip info">In progress</span>
+                <span class="qc-chip info">Đang làm (In progress)</span>
                 <div class="qc-progress" style="width:90px"><span style="width:${pct}%"></span></div>
                 <span class="small text-secondary">${ans}/${total} answered</span>
               </div>
@@ -202,7 +220,7 @@
           : "";
 
         return `
-          <tr>
+          <tr data-student-email="${esc((s.email || "").toLowerCase())}">
             <td><div class="d-flex align-items-center"><span class="qc-mini-avatar">${esc(s.initial)}</span>
               <div><div class="fw-semibold">${esc(s.name)}</div><div class="small text-secondary">${esc(s.email)}</div></div></div></td>
             <td class="text-nowrap">#${s.attempt_no}${s.selected ? ' <span class="qc-chip success">Counts</span>' : ""}</td>

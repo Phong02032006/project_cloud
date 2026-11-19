@@ -43,7 +43,7 @@ def test_full_flow(app):
 
     t = csrf(teacher, "/teacher")
     r = teacher.post("/teacher/exams/new", data={"csrf": t, "title": "Cloud Quiz", "duration_minutes": "10",
-                                                 "pass_percent": "60"})
+                                                 "pass_percent": "60", "visibility": "public"})
     exam_id = int(r.headers["Location"].rstrip("/").split("/")[-1])
 
     # Option C left blank: the correct index for "D" must be remapped to 2.
@@ -98,7 +98,7 @@ def test_grader_failure_marks_error_and_regrade(app, monkeypatch):
     login(teacher, "T", "t@x.edu", "teacher")
     login(student, "S", "s@x.edu", "student")
     t = csrf(teacher, "/teacher")
-    r = teacher.post("/teacher/exams/new", data={"csrf": t, "title": "E"})
+    r = teacher.post("/teacher/exams/new", data={"csrf": t, "title": "E", "visibility": "public"})
     exam_id = int(r.headers["Location"].split("/")[-1])
     teacher.post(f"/teacher/exams/{exam_id}/questions", data={
         "csrf": t, "text": "Q", "options": ["a", "b"], "correct": ["1"]})
@@ -152,7 +152,7 @@ def test_async_sqs_flow_with_callback(app, monkeypatch, tmp_path):
     login(teacher, "T", "t@x.edu", "teacher")
     login(student, "S", "s@x.edu", "student")
     t = csrf(teacher, "/teacher")
-    r = teacher.post("/teacher/exams/new", data={"csrf": t, "title": "Async"})
+    r = teacher.post("/teacher/exams/new", data={"csrf": t, "title": "Async", "visibility": "public"})
     exam_id = int(r.headers["Location"].split("/")[-1])
     teacher.post(f"/teacher/exams/{exam_id}/questions", data={
         "csrf": t, "text": "Q", "options": ["a", "b"], "correct": ["1"]})
@@ -197,7 +197,7 @@ def test_async_stuck_submission_can_be_resent(app, monkeypatch):
     login(teacher, "T", "t@x.edu", "teacher")
     login(student, "S", "s@x.edu", "student")
     t = csrf(teacher, "/teacher")
-    r = teacher.post("/teacher/exams/new", data={"csrf": t, "title": "E"})
+    r = teacher.post("/teacher/exams/new", data={"csrf": t, "title": "E", "visibility": "public"})
     exam_id = int(r.headers["Location"].split("/")[-1])
     teacher.post(f"/teacher/exams/{exam_id}/questions", data={
         "csrf": t, "text": "Q", "options": ["a", "b"], "correct": ["0"]})
@@ -221,7 +221,7 @@ def _setup(app, questions=(("First question?", ["a", "b"], ["0"]), ("Second ques
     login(teacher, "T", "t@x.edu", "teacher")
     login(student, "S", "s@x.edu", "student")
     t = csrf(teacher, "/teacher")
-    r = teacher.post("/teacher/exams/new", data={"csrf": t, "title": "E", "duration_minutes": duration})
+    r = teacher.post("/teacher/exams/new", data={"csrf": t, "title": "E", "duration_minutes": duration, "visibility": "public"})
     exam_id = int(r.headers["Location"].split("/")[-1])
     for text, options, correct in questions:
         teacher.post(f"/teacher/exams/{exam_id}/questions", data={
@@ -1005,5 +1005,187 @@ def test_register_and_password_login_in_entra_mode(app):
     assert "Invalid email or password" in wrong.get_data(as_text=True)
     right = c.post("/login", data={"csrf": csrf(c, "/login"), "email": "new@x.edu", "password": "secret123"})
     assert right.status_code == 302 and "New Student" in c.get("/student").get_data(as_text=True)
+
+
+def test_private_exam_permissions_assignments_and_realtime_monitoring(app):
+    from models import QuizAssignment
+
+    teacher, other_teacher = app.test_client(), app.test_client()
+    s_allowed, s_blocked, s_code = app.test_client(), app.test_client(), app.test_client()
+
+    login(teacher, "Owner Teacher", "owner@school.edu", "teacher")
+    login(other_teacher, "Other Teacher", "other_t@school.edu", "teacher")
+    login(s_allowed, "Student Allowed", "allowed@school.edu", "student")
+    login(s_blocked, "Student Blocked", "blocked@school.edu", "student")
+    login(s_code, "Student Code", "codeuser@school.edu", "student")
+
+    t = csrf(teacher, "/teacher")
+    # Default visibility is 'private' with auto-generated 6-char access_code
+    r = teacher.post("/teacher/exams/new", data={"csrf": t, "title": "Private Final Exam", "duration_minutes": "15"})
+    exam_id = int(r.headers["Location"].rstrip("/").split("/")[-1])
+
+    with app.app_context():
+        exam = db.session.get(Exam, exam_id)
+        assert exam.visibility == "private"
+        assert exam.access_code and len(exam.access_code) == 6
+        access_code = exam.access_code
+
+    teacher.post(f"/teacher/exams/{exam_id}/questions", data={
+        "csrf": t, "text": "Cloud question 1?", "options": ["Azure", "On-prem"], "correct": ["0"], "points": "2"})
+    teacher.post(f"/teacher/exams/{exam_id}/publish", data={"csrf": t})
+
+    # Another teacher is strictly blocked (403) from editing, assigning, or monitoring
+    ot = csrf(other_teacher, "/teacher")
+    assert other_teacher.get(f"/teacher/exams/{exam_id}").status_code == 403
+    assert other_teacher.post(f"/teacher/exams/{exam_id}/assignments",
+                              data={"csrf": ot, "bulk_emails": "a@b.com"}).status_code == 403
+    assert other_teacher.get(f"/teacher/exams/{exam_id}/results").status_code == 403
+    assert other_teacher.get(f"/teacher/exams/{exam_id}/live.json").status_code == 403
+    assert other_teacher.get(f"/api/exams/{exam_id}/pubsub-token").status_code == 403
+
+    # Unassigned students cannot see the private exam on dashboard and get 403 on all direct URLs
+    assert "Private Final Exam" not in s_blocked.get("/student").get_data(as_text=True)
+    assert s_blocked.get(f"/student/exams/{exam_id}").status_code == 403
+    assert s_blocked.get(f"/exam/{exam_id}").status_code == 403
+    assert s_blocked.get(f"/student/exams/{exam_id}/attempts").status_code == 403
+    assert s_blocked.post(f"/student/exams/{exam_id}/start",
+                          data={"csrf": csrf(s_blocked, "/student")}).status_code == 403
+    assert s_blocked.get(f"/api/exams/{exam_id}/pubsub-token").status_code == 403
+
+    # Teacher assigns s_allowed via checkbox + bulk paste (including an Entra email not yet logged in, duplicates, invalid)
+    teacher.post(f"/teacher/exams/{exam_id}/assignments", data={
+        "csrf": t,
+        "student_emails": ["allowed@school.edu"],
+        "bulk_emails": "  ALLOWED@school.edu , future_entra@school.edu;\nnot-an-email\nfuture_entra@school.edu ",
+    })
+    manage_html = teacher.get(f"/teacher/exams/{exam_id}").get_data(as_text=True)
+    assert "Đã thêm 2 học sinh" in manage_html
+    assert "bỏ qua 2 email đã tồn tại" in manage_html
+    assert "Đã có tài khoản" in manage_html and "Chờ đăng nhập" in manage_html
+
+    # Realtime monitoring for private exam pre-populates assigned students with status 'not_started' (Chưa vào thi)
+    live_init = teacher.get(f"/teacher/exams/{exam_id}/live.json").get_json()
+    assert len(live_init["submissions"]) == 2
+    assert {row["email"]: row["status"] for row in live_init["submissions"]} == {
+        "allowed@school.edu": "not_started",
+        "future_entra@school.edu": "not_started",
+    }
+    results_html = teacher.get(f"/teacher/exams/{exam_id}/results").get_data(as_text=True)
+    assert "Chưa vào thi" in results_html
+
+    # Assigned student sees the exam under "Bài thi được giao", can get Web PubSub token, and starts the exam
+    allowed_dash = s_allowed.get("/student").get_data(as_text=True)
+    assert "Private Final Exam" in allowed_dash and "Bài thi được giao" in allowed_dash
+    assert s_allowed.get(f"/api/exams/{exam_id}/pubsub-token").status_code == 200
+
+    # When s_allowed enters the exam, their row updates to 'in_progress' without duplicating rows
+    s_tok = csrf(s_allowed, f"/student/exams/{exam_id}")
+    live_mid = teacher.get(f"/teacher/exams/{exam_id}/live.json").get_json()
+    assert len(live_mid["submissions"]) == 2
+    assert {row["email"]: row["status"] for row in live_mid["submissions"]} == {
+        "allowed@school.edu": "in_progress",
+        "future_entra@school.edu": "not_started",
+    }
+
+    # Blocked student still gets 403 even on /submissions/<id>/progress
+    assert s_blocked.post("/submissions/1/progress",
+                          data={"csrf": csrf(s_blocked, "/student"), "q1": "0"}).status_code == 403
+
+    # s_allowed submits -> row updates to 'graded' with score, still no duplicate rows
+    s_allowed.post(f"/student/exams/{exam_id}", data={"csrf": s_tok, "q1": "0"})
+    live_done = teacher.get(f"/teacher/exams/{exam_id}/live.json").get_json()
+    assert len(live_done["submissions"]) == 2
+    by_email = {row["email"]: row for row in live_done["submissions"]}
+    assert by_email["allowed@school.edu"]["status"] == "graded"
+    assert by_email["allowed@school.edu"]["score"] == 2.0
+    assert by_email["future_entra@school.edu"]["status"] == "not_started"
+
+    # Student s_code joins via access_code (wrong code fails, right code unlocks access)
+    c_tok = csrf(s_code, "/student")
+    bad_join = s_code.post("/student/join-code", data={"csrf": c_tok, "access_code": "WRONG1"}, follow_redirects=True)
+    assert "Mã bài thi không hợp lệ" in bad_join.get_data(as_text=True)
+    assert s_code.get(f"/student/exams/{exam_id}").status_code == 403
+
+    ok_join = s_code.post("/student/join-code", data={"csrf": c_tok, "access_code": access_code.lower()},
+                          follow_redirects=True)
+    assert "Đã mở quyền truy cập bài thi" in ok_join.get_data(as_text=True)
+    assert s_code.get(f"/exam/{exam_id}").status_code == 200
+
+    # Teacher removes future_entra@school.edu from assignments
+    with app.app_context():
+        assign_row = QuizAssignment.query.filter_by(quiz_id=exam_id, student_email="future_entra@school.edu").one()
+        aid = assign_row.id
+    teacher.post(f"/teacher/exams/{exam_id}/assignments/{aid}/delete", data={"csrf": t})
+    with app.app_context():
+        assert QuizAssignment.query.filter_by(id=aid).first() is None
+
+    # Teacher can regenerate access_code
+    teacher.post(f"/teacher/exams/{exam_id}/access-code", data={"csrf": t})
+    with app.app_context():
+        new_code = db.session.get(Exam, exam_id).access_code
+        assert new_code and len(new_code) == 6 and new_code != access_code
+
+
+def test_auto_migration_from_legacy_sqlite_schema(tmp_path):
+    import sqlite3
+
+    from models import User
+
+    db_file = tmp_path / "legacy.db"
+    conn = sqlite3.connect(db_file)
+    conn.executescript(
+        """
+        CREATE TABLE users (
+            id INTEGER PRIMARY KEY,
+            external_id VARCHAR(128) NOT NULL UNIQUE,
+            name VARCHAR(200) NOT NULL,
+            email VARCHAR(255),
+            role VARCHAR(20) NOT NULL,
+            created_at DATETIME
+        );
+        CREATE TABLE exams (
+            id INTEGER PRIMARY KEY,
+            title VARCHAR(300) NOT NULL,
+            description TEXT,
+            duration_minutes INTEGER,
+            pass_percent FLOAT,
+            published BOOLEAN NOT NULL,
+            policy JSON,
+            max_attempts INTEGER NOT NULL,
+            selection_deadline DATETIME,
+            teacher_id INTEGER NOT NULL,
+            created_at DATETIME,
+            current_version_id INTEGER
+        );
+        CREATE TABLE questions (
+            id INTEGER PRIMARY KEY,
+            exam_id INTEGER NOT NULL,
+            text TEXT NOT NULL,
+            options JSON NOT NULL,
+            correct JSON NOT NULL,
+            points FLOAT
+        );
+        INSERT INTO users (id, external_id, name, email, role) VALUES (1, 'dev:t@x.edu', 'T', 't@x.edu', 'teacher');
+        INSERT INTO exams (id, title, duration_minutes, pass_percent, published, max_attempts, teacher_id)
+        VALUES (1, 'Legacy Exam', 15, 50, 1, 1, 1);
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    migrated_app = create_app({
+        "TESTING": True,
+        "SQLALCHEMY_DATABASE_URI": f"sqlite:///{db_file}",
+        "AUTH_MODE": "dev",
+    })
+    with migrated_app.app_context():
+        exam = db.session.get(Exam, 1)
+        user = db.session.get(User, 1)
+        assert exam.visibility == "private"
+        assert exam.access_code and len(exam.access_code) == 6
+        assert user.password_hash is None
+        db.engine.dispose()
+
+
 
 
