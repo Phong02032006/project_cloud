@@ -15,6 +15,7 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 
 import ai_generator
 import grader_client
+import pubsub_client
 import storage_client
 from auth import bp as auth_bp
 from auth import login_required
@@ -159,7 +160,50 @@ SUBMIT_GRACE = timedelta(seconds=30)
 # Managed mode: the page pings every few seconds; a longer silence (tab killed, network down, JS off) is a violation.
 HEARTBEAT_GAP = timedelta(seconds=30)
 # Events the exam page may report: type -> counts as a violation (and locks the attempt).
-CLIENT_EVENTS = {"fullscreen_exit": True, "focus_lost": True, "copy": False, "paste": False, "context_menu": False}
+CLIENT_EVENTS = {
+    "fullscreen_exit": True,
+    "focus_lost": True,
+    "tab_switch": True,
+    "copy": False,
+    "paste": False,
+    "context_menu": False,
+}
+
+
+def _answered_count(sub):
+    if not isinstance(sub.answers, dict):
+        return 0
+    return sum(1 for v in sub.answers.values() if v)
+
+
+def _publish_submission_state(sub, event_type):
+    now = utcnow()
+    last_dt = (sub.last_seen_at or sub.started_at) if sub.status == "in_progress" else (sub.submitted_at or now)
+    total_q = len(sub.version.question_ids) if sub.version else 0
+    pubsub_client.publish_exam_event(
+        sub.exam_id,
+        event_type,
+        {
+            "submission_id": sub.id,
+            "student_id": sub.student_id,
+            "student_name": sub.student.name if sub.student else "",
+            "student_email": sub.student.email if sub.student else "",
+            "attempt_no": sub.attempt_no,
+            "selected": sub.selected,
+            "status": sub.status,
+            "answered_count": _answered_count(sub),
+            "total_questions": total_q,
+            "score": sub.score,
+            "max_score": sub.max_score,
+            "percent": sub.percent,
+            "passed": sub.passed,
+            "violations": sub.violations,
+            "review": sub.review,
+            "locked": sub.locked_at is not None,
+            "lock_reason": sub.lock_reason,
+            "updated_at": last_dt.strftime("%H:%M:%S") if sub.status == "in_progress" else last_dt.strftime("%b %d, %Y %H:%M"),
+        },
+    )
 
 
 def _apply_result(sub, result):
@@ -194,23 +238,43 @@ def _log(sub, type, detail=None, counted=False):
 
 
 def _record(app, sub, type, detail=None, violation=False):
-    """Log a managed-mode event. A violation is counted, may lock the attempt for re-entry approval and
+    """Log an exam monitoring event. A violation is counted, may lock the attempt for re-entry approval and
     may trigger auto-submit. Nothing is counted while the attempt is already locked or finished."""
     policy = sub.version.settings
-    if not policy["managed"] or sub.status != "in_progress":
+    if sub.status != "in_progress" or (not policy["managed"] and type != "tab_switch"):
         return
     counted = violation and sub.locked_at is None
     _log(sub, type, detail, counted)
+    now = utcnow()
     if counted:
         # Increment in SQL so concurrent reports from the same page are not lost.
         values = {"violations": Submission.violations + 1}
-        if policy["reentry_approval"]:
-            values.update(locked_at=utcnow(), lock_reason=type)
+        if policy["managed"] and policy["reentry_approval"]:
+            values.update(locked_at=now, lock_reason=type)
         db.session.execute(update(Submission).where(Submission.id == sub.id).values(**values))
     db.session.commit()
     db.session.refresh(sub)
+    pubsub_client.publish_exam_event(
+        sub.exam_id,
+        "tab_violation" if type in ("tab_switch", "focus_lost") else "integrity_event",
+        {
+            "submission_id": sub.id,
+            "student_id": sub.student_id,
+            "student_name": sub.student.name if sub.student else "",
+            "student_email": sub.student.email if sub.student else "",
+            "attempt_no": sub.attempt_no,
+            "event_type": type,
+            "detail": detail,
+            "counted": counted,
+            "violations": sub.violations,
+            "locked": sub.locked_at is not None,
+            "lock_reason": sub.lock_reason,
+            "status": sub.status,
+            "at": now.strftime("%H:%M:%S"),
+        },
+    )
     limit = policy["autosubmit_after"]
-    if counted and limit and sub.violations >= limit and _claim(sub):
+    if counted and policy["managed"] and limit and sub.violations >= limit and _claim(sub):
         _log(sub, "auto_submitted", f"after {sub.violations} violations")
         db.session.commit()
         _grade_and_save(app, sub)
@@ -273,6 +337,7 @@ def _start_attempt(exam, student_id, attempts):
     except IntegrityError:
         db.session.rollback()
         return None
+    _publish_submission_state(sub, "attempt_started")
     return sub
 
 
@@ -353,15 +418,18 @@ def _grade_and_save(app, sub):
             sub.status = "pending"
             sub.submitted_at = utcnow()  # restarts the "stuck" timer on regrade
             db.session.commit()
+            _publish_submission_state(sub, "attempt_submitted")
             return True
         result = grader_client.grade_submission(payload)
     except Exception:
         app.logger.exception("grading failed for submission %s", sub.id)
         sub.status = "error"
         db.session.commit()
+        _publish_submission_state(sub, "attempt_submitted")
         return False
     _apply_result(sub, result)
     db.session.commit()
+    _publish_submission_state(sub, "attempt_submitted")
     return True
 
 
@@ -821,6 +889,25 @@ def register_routes(app):
             db.session.commit()
         return jsonify(_attempt_state(sub))
 
+    @app.route("/submissions/<int:sub_id>/progress", methods=["POST"])
+    @login_required("student")
+    def attempt_progress(sub_id):
+        sub = _own_attempt(sub_id)
+        if sub.status == "in_progress":
+            answers = {
+                str(q.id): [int(v) for v in request.form.getlist(f"q{q.id}") if v.isdigit()]
+                for q in sub.version.questions
+            }
+            sub.answers = answers
+            sub.last_seen_at = utcnow()
+            db.session.commit()
+            _publish_submission_state(sub, "progress_updated")
+        return jsonify({
+            **_attempt_state(sub),
+            "answered_count": _answered_count(sub),
+            "total_questions": len(sub.version.question_ids) if sub.version else 0,
+        })
+
     @app.route("/submissions/<int:sub_id>/events", methods=["POST"])
     @login_required("student")
     def attempt_event(sub_id):
@@ -830,6 +917,17 @@ def register_routes(app):
             abort(400)
         _record(app, sub, kind, request.form.get("detail", "")[:300] or None, violation=CLIENT_EVENTS[kind])
         return jsonify(_attempt_state(sub))
+
+    @app.route("/api/exams/<int:exam_id>/pubsub-token")
+    @login_required()
+    def exam_pubsub_token(exam_id):
+        exam = db.get_or_404(Exam, exam_id)
+        if g.user.role == "teacher":
+            if exam.teacher_id != g.user.id:
+                abort(403)
+        elif not exam.published:
+            abort(403)
+        return jsonify(pubsub_client.get_client_access_url(exam.id, user_id=g.user.id))
 
     # ---------- Teacher: managed-mode controls ----------
     def _teacher_attempt(sub_id):
@@ -842,22 +940,86 @@ def register_routes(app):
     @login_required("teacher")
     def exam_live(exam_id):
         exam = _own_exam(exam_id)
-        _finish_expired(app, exam.submissions)
+        _finalize_exam(app, exam)
         now = utcnow()
         version_no = {v.id: i + 1 for i, v in enumerate(exam.versions)}
-        attempts = [{
-            "id": s.id, "name": s.student.name, "email": s.student.email, "version": version_no.get(s.version_id),
-            "managed": s.version.settings["managed"], "violations": s.violations,
-            "locked": s.locked_at is not None, "lock_reason": s.lock_reason,
-            "seen_ago": int((now - s.last_seen_at).total_seconds()) if s.last_seen_at else None,
-            "remaining": max(0, int((s.deadline - now).total_seconds())),
-        } for s in exam.submissions if s.status == "in_progress"]
+        tickets = {t.student_id: t for t in exam.tickets if t.is_open}
+        subs = sorted(exam.submissions, key=lambda s: (s.student.name, s.attempt_no))
+
+        attempts = []
+        submissions_data = []
+        initial_fn = app.jinja_env.filters["initial"]
+        for idx, s in enumerate(subs):
+            total_q = len(s.version.question_ids) if s.version else 0
+            answered_q = _answered_count(s)
+            seen_ago = int((now - s.last_seen_at).total_seconds()) if s.last_seen_at else None
+            remaining = max(0, int((s.deadline - now).total_seconds())) if s.status == "in_progress" else 0
+            last_dt = (s.last_seen_at or s.started_at) if s.status == "in_progress" else (s.submitted_at or s.started_at)
+            updated_display = last_dt.strftime("%H:%M:%S") if s.status == "in_progress" else last_dt.strftime("%b %d, %Y %H:%M")
+            is_last = (idx == len(subs) - 1) or (subs[idx + 1].student_id != s.student_id)
+
+            if s.status == "in_progress":
+                attempts.append({
+                    "id": s.id,
+                    "attempt_no": s.attempt_no,
+                    "name": s.student.name,
+                    "email": s.student.email,
+                    "version": version_no.get(s.version_id),
+                    "managed": s.version.settings["managed"],
+                    "violations": s.violations,
+                    "locked": s.locked_at is not None,
+                    "lock_reason": s.lock_reason,
+                    "seen_ago": seen_ago,
+                    "remaining": remaining,
+                    "answered_count": answered_q,
+                    "total_questions": total_q,
+                    "updated_at": updated_display,
+                })
+
+            submissions_data.append({
+                "id": s.id,
+                "student_id": s.student_id,
+                "name": s.student.name,
+                "initial": initial_fn(s.student.name),
+                "email": s.student.email,
+                "attempt_no": s.attempt_no,
+                "selected": s.selected,
+                "status": s.status,
+                "score": s.score,
+                "max_score": s.max_score,
+                "percent": s.percent,
+                "passed": s.passed,
+                "violations": s.violations,
+                "managed": s.version.settings["managed"],
+                "review": s.review,
+                "answered_count": answered_q,
+                "total_questions": total_q,
+                "submitted_at": s.submitted_at.strftime("%b %d, %Y %H:%M") if s.submitted_at else "",
+                "updated_at": updated_display,
+                "details_url": url_for("submission_view", sub_id=s.id),
+                "retake_url": url_for("ticket_grant", exam_id=exam.id, student_id=s.student_id),
+                "has_ticket": s.student_id in tickets,
+                "is_last_for_student": is_last,
+            })
+
         sub_ids = [s.id for s in exam.submissions]
         events = (AttemptEvent.query.filter(AttemptEvent.submission_id.in_(sub_ids))
                   .order_by(AttemptEvent.id.desc()).limit(30).all()) if sub_ids else []
-        return jsonify(attempts=attempts, events=[{
-            "student": e.submission.student.name, "type": e.type, "detail": e.detail, "counted": e.counted,
-            "at": e.at.strftime("%H:%M:%S")} for e in events])
+        return jsonify(
+            attempts=attempts,
+            submissions=submissions_data,
+            stats=_exam_stats(exam),
+            events=[{
+                "id": e.id,
+                "submission_id": e.submission_id,
+                "student": e.submission.student.name,
+                "type": e.type,
+                "detail": e.detail,
+                "counted": e.counted,
+                "violations": e.submission.violations,
+                "at": e.at.strftime("%H:%M:%S"),
+            } for e in events],
+        )
 
     def _exam_student(exam_id, student_id):
         exam = _own_exam(exam_id)
@@ -946,6 +1108,7 @@ def register_routes(app):
             sub.last_seen_at = utcnow()
             _log(sub, "approved", f"by {g.user.name}")
             db.session.commit()
+            _publish_submission_state(sub, "attempt_approved")
         return jsonify(_attempt_state(sub))
 
     @app.route("/teacher/submissions/<int:sub_id>/force-submit", methods=["POST"])
@@ -1034,6 +1197,7 @@ def register_routes(app):
             return jsonify(error="unknown submission"), 404
         _apply_result(sub, data)
         db.session.commit()
+        _publish_submission_state(sub, "attempt_submitted")
         app.logger.info("callback: submission %s graded %s/%s", sub.id, sub.score, sub.max_score)
         return jsonify(status="ok")
 

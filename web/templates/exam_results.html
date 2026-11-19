@@ -10,32 +10,46 @@
   </div>
 </div>
 
-{% if stats %}
-<div class="row g-3 mb-4">
-  {% for icon, tone, value, label in [
-    ('bi-people', 'tone-indigo', stats.count, 'Submissions'),
-    ('bi-speedometer2', 'tone-amber', stats.avg|num ~ '%', 'Average score'),
-    ('bi-arrow-up-circle', 'tone-green', stats.max|num ~ '%', 'Highest'),
-    ('bi-arrow-down-circle', 'tone-pink', stats.min|num ~ '%', 'Lowest'),
-    ('bi-trophy', 'tone-cyan', stats.pass_rate|num ~ '%', 'Pass rate'),
+<div class="row g-3 mb-4" id="stats-row" {{ '' if stats else 'hidden' }}>
+  {% for key, icon, tone, value, label in [
+    ('count', 'bi-people', 'tone-indigo', stats.count if stats else 0, 'Submissions'),
+    ('avg', 'bi-speedometer2', 'tone-amber', (stats.avg|num ~ '%') if stats else '0%', 'Average score'),
+    ('max', 'bi-arrow-up-circle', 'tone-green', (stats.max|num ~ '%') if stats else '0%', 'Highest'),
+    ('min', 'bi-arrow-down-circle', 'tone-pink', (stats.min|num ~ '%') if stats else '0%', 'Lowest'),
+    ('pass_rate', 'bi-trophy', 'tone-cyan', (stats.pass_rate|num ~ '%') if stats else '0%', 'Pass rate'),
   ] %}
   <div class="col-6 col-lg">
     <div class="qc-card qc-stat h-100"><div class="icon {{ tone }}"><i class="bi {{ icon }}"></i></div>
-      <div><div class="value">{{ value }}</div><div class="label">{{ label }}</div></div></div>
+      <div><div class="value" id="stat-{{ key }}">{{ value }}</div><div class="label">{{ label }}</div></div></div>
   </div>
   {% endfor %}
 </div>
-{% endif %}
 
-<div class="qc-card p-4 mb-4" id="live" data-url="{{ url_for('exam_live', exam_id=exam.id) }}">
-  <div class="d-flex align-items-center gap-2 mb-3">
-    <h5 class="m-0"><i class="bi bi-broadcast text-danger"></i> Live</h5>
-    <span class="small text-secondary">Attempts in progress, refreshed every 3 seconds</span>
+<div class="qc-card p-4 mb-4" id="live"
+     data-url="{{ url_for('exam_live', exam_id=exam.id) }}"
+     data-pubsub-url="{{ url_for('exam_pubsub_token', exam_id=exam.id) }}">
+  <div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-3">
+    <div class="d-flex align-items-center gap-2">
+      <h5 class="m-0"><i class="bi bi-broadcast text-secondary"></i> Real-time monitoring</h5>
+      <span class="small text-secondary">Live student progress &amp; tab-switch alerts</span>
+    </div>
+    <span class="qc-chip" id="pubsub-status">Connecting...</span>
   </div>
+
+  <div class="qc-live-notice mb-3" id="live-alert-banner" hidden>
+    <div class="d-flex align-items-center justify-content-between gap-2">
+      <div id="live-alert-text"></div>
+      <button type="button" class="btn-close btn-sm" id="live-alert-close" aria-label="Close"></button>
+    </div>
+  </div>
+
   <div class="row g-4">
-    <div class="col-lg-7"><div id="live-attempts" class="small text-secondary">Loading...</div></div>
+    <div class="col-lg-7">
+      <div class="small fw-semibold mb-2">Active attempts</div>
+      <div id="live-attempts" class="small text-secondary">Loading...</div>
+    </div>
     <div class="col-lg-5">
-      <div class="small fw-semibold mb-2">Recent activity</div>
+      <div class="small fw-semibold mb-2">Recent activity &amp; tab alerts</div>
       <div id="live-events" class="small" style="max-height:260px;overflow:auto"></div>
     </div>
   </div>
@@ -44,9 +58,11 @@
 <div class="qc-card overflow-hidden">
   <div class="table-responsive">
   <table class="table qc-table">
-    <thead><tr><th>Student</th><th>Attempt</th><th>Score</th><th style="width:22%">Percent</th><th>Result</th><th>Integrity</th><th>Submitted (UTC)</th><th></th></tr></thead>
-    <tbody>
+    <thead><tr><th>Student</th><th>Attempt</th><th>Score</th><th style="width:22%">Percent</th><th>Result</th><th>Integrity</th><th>Updated / Submitted (UTC)</th><th></th></tr></thead>
+    <tbody id="submissions-tbody">
     {% for s in submissions %}
+      {% set answered_count = (s.answers or {}).values()|select|list|length %}
+      {% set total_q = s.version.question_ids|length if s.version else 0 %}
       <tr>
         <td><div class="d-flex align-items-center"><span class="qc-mini-avatar">{{ s.student.name|initial }}</span>
           <div><div class="fw-semibold">{{ s.student.name }}</div><div class="small text-secondary">{{ s.student.email }}</div></div></div></td>
@@ -55,15 +71,22 @@
           <td class="fw-bold">{{ s.score|num }}/{{ s.max_score|num }}</td>
           <td><div class="d-flex align-items-center gap-2"><div class="qc-progress flex-grow-1"><span style="width: {{ s.percent }}%"></span></div><span class="small fw-semibold">{{ s.percent|num }}%</span></div></td>
           <td>{% if s.passed %}<span class="qc-chip success"><i class="bi bi-check-circle-fill"></i> Passed</span>{% else %}<span class="qc-chip danger"><i class="bi bi-x-circle-fill"></i> Failed</span>{% endif %}</td>
+        {% elif s.status == 'in_progress' %}
+          <td colspan="3">
+            <div class="d-flex align-items-center gap-2 flex-wrap">
+              <span class="qc-chip info">In progress</span>
+              <span class="small text-secondary">{{ answered_count }}/{{ total_q }} answered</span>
+            </div>
+          </td>
         {% else %}
-          <td colspan="3"><span class="qc-chip warning"><i class="bi bi-exclamation-triangle"></i> {{ 'Grading error' if s.status == 'error' else 'In progress' if s.status == 'in_progress' else 'Grading...' }}</span></td>
+          <td colspan="3"><span class="qc-chip warning"><i class="bi bi-exclamation-triangle"></i> {{ 'Grading error' if s.status == 'error' else 'Grading...' }}</span></td>
         {% endif %}
         <td>
           {% if s.violations %}<span class="qc-chip danger"><i class="bi bi-flag-fill"></i> {{ s.violations|plural("violation") }}</span>
           {% elif s.version.settings.managed %}<span class="qc-chip success"><i class="bi bi-shield-check"></i> Clean</span>{% endif %}
           {% if s.review %}<span class="qc-chip {{ 'warning' if s.review == 'withheld' else 'muted' }}">{{ s.review|capitalize }}</span>{% endif %}
         </td>
-        <td class="small text-secondary">{{ s.submitted_at.strftime('%b %d, %Y %H:%M') }}</td>
+        <td class="small text-secondary">{{ (s.last_seen_at or s.started_at).strftime('%H:%M:%S') if s.status == 'in_progress' else s.submitted_at.strftime('%b %d, %Y %H:%M') }}</td>
         <td class="text-end text-nowrap"><a href="{{ url_for('submission_view', sub_id=s.id) }}" class="btn btn-sm btn-ghost">Details <i class="bi bi-chevron-right"></i></a>
           {% if loop.last or loop.nextitem.student_id != s.student_id %}
             <a href="{{ url_for('ticket_grant', exam_id=exam.id, student_id=s.student_id) }}" class="btn btn-sm btn-ghost">{% if tickets.get(s.student_id) %}<span class="qc-chip info">Retake granted</span>{% else %}<i class="bi bi-arrow-counterclockwise"></i> Retake{% endif %}</a>
@@ -81,40 +104,214 @@
 <script>
   (() => {
     const live = document.getElementById("live"), csrf = "{{ csrf_token() }}";
+    const statusChip = document.getElementById("pubsub-status");
+    const alertBanner = document.getElementById("live-alert-banner");
+    const alertText = document.getElementById("live-alert-text");
     const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
+    const fmtNum = n => (n == null || n === "") ? "" : Number(Number(n).toFixed(2)).toString();
     const mmss = s => `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
-    const LABELS = {fullscreen_exit: "left fullscreen", focus_lost: "switched away", reentry: "reopened the exam",
-                    heartbeat_gap: "went silent", copy: "tried to copy", paste: "tried to paste",
-                    context_menu: "opened the right-click menu", approved: "was let back in",
-                    auto_submitted: "was auto-submitted", force_submitted: "was force-submitted",
-                    released: "result released", cancelled: "certificate cancelled"};
-    let ids = null;
+    const LABELS = {
+      tab_switch: "switched tab / window",
+      focus_lost: "switched away",
+      fullscreen_exit: "left fullscreen",
+      reentry: "reopened the exam",
+      heartbeat_gap: "went silent",
+      copy: "tried to copy",
+      paste: "tried to paste",
+      context_menu: "opened the right-click menu",
+      approved: "was let back in",
+      auto_submitted: "was auto-submitted",
+      force_submitted: "was force-submitted",
+      released: "result released",
+      cancelled: "certificate cancelled",
+      revoked: "certificate revoked"
+    };
+
+    document.getElementById("live-alert-close").addEventListener("click", () => {
+      alertBanner.hidden = true;
+    });
 
     window.qcAct = (id, action) => {
-      const body = new FormData(); body.append("csrf", csrf);
+      const body = new FormData();
+      body.append("csrf", csrf);
       fetch(`/teacher/submissions/${id}/${action}`, {method: "POST", body}).then(refresh);
     };
 
+    const renderStats = st => {
+      const row = document.getElementById("stats-row");
+      if (!st) {
+        row.hidden = true;
+        return;
+      }
+      row.hidden = false;
+      document.getElementById("stat-count").textContent = st.count;
+      document.getElementById("stat-avg").textContent = `${fmtNum(st.avg)}%`;
+      document.getElementById("stat-max").textContent = `${fmtNum(st.max)}%`;
+      document.getElementById("stat-min").textContent = `${fmtNum(st.min)}%`;
+      document.getElementById("stat-pass_rate").textContent = `${fmtNum(st.pass_rate)}%`;
+    };
+
+    const renderSubmissions = subs => {
+      const tbody = document.getElementById("submissions-tbody");
+      if (!Array.isArray(subs) || !subs.length) {
+        tbody.innerHTML = '<tr><td colspan="8"><div class="qc-empty"><i class="bi bi-inbox"></i>No submissions yet.</div></td></tr>';
+        return;
+      }
+      tbody.innerHTML = subs.map(s => {
+        let midCols = "";
+        if (s.status === "graded") {
+          const pct = fmtNum(s.percent);
+          const resChip = s.passed
+            ? '<span class="qc-chip success"><i class="bi bi-check-circle-fill"></i> Passed</span>'
+            : '<span class="qc-chip danger"><i class="bi bi-x-circle-fill"></i> Failed</span>';
+          midCols = `
+            <td class="fw-bold">${fmtNum(s.score)}/${fmtNum(s.max_score)}</td>
+            <td><div class="d-flex align-items-center gap-2"><div class="qc-progress flex-grow-1"><span style="width: ${Number(s.percent) || 0}%"></span></div><span class="small fw-semibold">${pct}%</span></div></td>
+            <td>${resChip}</td>`;
+        } else if (s.status === "in_progress") {
+          const total = s.total_questions || 0;
+          const ans = s.answered_count || 0;
+          const pct = total ? Math.round((100 * ans) / total) : 0;
+          midCols = `
+            <td colspan="3">
+              <div class="d-flex align-items-center gap-2 flex-wrap">
+                <span class="qc-chip info">In progress</span>
+                <div class="qc-progress" style="width:90px"><span style="width:${pct}%"></span></div>
+                <span class="small text-secondary">${ans}/${total} answered</span>
+              </div>
+            </td>`;
+        } else {
+          const label = s.status === "error" ? "Grading error" : "Grading...";
+          midCols = `<td colspan="3"><span class="qc-chip warning"><i class="bi bi-exclamation-triangle"></i> ${label}</span></td>`;
+        }
+
+        let integrity = "";
+        if (s.violations) {
+          integrity += `<span class="qc-chip danger"><i class="bi bi-flag-fill"></i> ${s.violations} violation${s.violations === 1 ? "" : "s"}</span> `;
+        } else if (s.managed) {
+          integrity += `<span class="qc-chip success"><i class="bi bi-shield-check"></i> Clean</span> `;
+        }
+        if (s.review) {
+          const rTone = s.review === "withheld" ? "warning" : "muted";
+          const rLabel = s.review.charAt(0).toUpperCase() + s.review.slice(1);
+          integrity += `<span class="qc-chip ${rTone}">${esc(rLabel)}</span>`;
+        }
+
+        const retakeBtn = s.is_last_for_student
+          ? ` <a href="${esc(s.retake_url)}" class="btn btn-sm btn-ghost">${s.has_ticket ? '<span class="qc-chip info">Retake granted</span>' : '<i class="bi bi-arrow-counterclockwise"></i> Retake'}</a>`
+          : "";
+
+        return `
+          <tr>
+            <td><div class="d-flex align-items-center"><span class="qc-mini-avatar">${esc(s.initial)}</span>
+              <div><div class="fw-semibold">${esc(s.name)}</div><div class="small text-secondary">${esc(s.email)}</div></div></div></td>
+            <td class="text-nowrap">#${s.attempt_no}${s.selected ? ' <span class="qc-chip success">Counts</span>' : ""}</td>
+            ${midCols}
+            <td>${integrity}</td>
+            <td class="small text-secondary">${esc(s.status === "in_progress" ? `Updated ${s.updated_at}` : s.submitted_at)}</td>
+            <td class="text-end text-nowrap"><a href="${esc(s.details_url)}" class="btn btn-sm btn-ghost">Details <i class="bi bi-chevron-right"></i></a>${retakeBtn}</td>
+          </tr>`;
+      }).join("");
+    };
+
     const refresh = () => fetch(live.dataset.url, {cache: "no-store"}).then(r => r.json()).then(d => {
-      // Attempts started or finished: reload so the results table below is current.
-      const now = d.attempts.map(a => a.id).sort().join();
-      if (ids !== null && ids !== now) return location.reload();
-      ids = now;
-      document.getElementById("live-attempts").innerHTML = d.attempts.length ? d.attempts.map(a => `
+      document.getElementById("live-attempts").innerHTML = d.attempts.length ? d.attempts.map(a => {
+        const total = a.total_questions || 0;
+        const ans = a.answered_count || 0;
+        const pct = total ? Math.round((100 * ans) / total) : 0;
+        return `
         <div class="d-flex flex-wrap align-items-center gap-2 py-2 border-bottom">
-          <div class="flex-grow-1"><div class="fw-semibold text-body">${esc(a.name)}
-              ${a.managed ? "" : '<span class="qc-chip muted">not managed</span>'}</div>
-            <div>v${a.version} · ${mmss(a.remaining)} left${a.seen_ago != null && a.seen_ago > 15 ? ` · <span class="text-danger">silent ${a.seen_ago}s</span>` : ""}</div></div>
+          <div class="flex-grow-1">
+            <div class="fw-semibold text-body">${esc(a.name)} <span class="text-secondary fw-normal">#${a.attempt_no || 1}</span>
+              ${a.managed ? "" : '<span class="qc-chip muted">standard</span>'}</div>
+            <div class="d-flex align-items-center gap-2 mt-1 flex-wrap">
+              <div class="qc-progress" style="width:90px"><span style="width:${pct}%"></span></div>
+              <span>${ans}/${total} answered</span>
+              <span>· v${a.version} · ${mmss(a.remaining)} left</span>
+              ${a.updated_at ? `<span>· updated ${esc(a.updated_at)}</span>` : ""}
+              ${a.seen_ago != null && a.seen_ago > 15 ? `· <span class="text-danger">silent ${a.seen_ago}s</span>` : ""}
+            </div>
+          </div>
           ${a.violations ? `<span class="qc-chip danger">${a.violations} violation${a.violations === 1 ? "" : "s"}</span>` : ""}
           ${a.locked ? `<span class="qc-chip warning">waiting: ${esc(LABELS[a.lock_reason] || a.lock_reason)}</span>
                         <button class="btn btn-sm btn-primary" onclick="qcAct(${a.id}, 'approve')">Approve</button>` : ""}
           <button class="btn btn-sm btn-ghost text-danger" onclick="qcConfirm('Submit this attempt now?').then(ok => ok && qcAct(${a.id}, 'force-submit'))">Force submit</button>
-        </div>`).join("") : "No attempts in progress.";
+        </div>`;
+      }).join("") : "No attempts in progress.";
+
       document.getElementById("live-events").innerHTML = d.events.map(e => `
-        <div class="py-1 ${e.counted ? "text-danger" : "text-secondary"}">${e.at} · <b>${esc(e.student)}</b> ${esc(LABELS[e.type] || e.type)}
+        <div class="py-1 border-bottom ${e.counted ? "text-danger" : "text-secondary"}">${esc(e.at)} · <b>${esc(e.student)}</b> ${esc(LABELS[e.type] || e.type)}
           ${e.detail ? `<span class="text-secondary">(${esc(e.detail)})</span>` : ""}</div>`).join("") || '<div class="text-secondary">No activity yet.</div>';
+
+      if (d.submissions) renderSubmissions(d.submissions);
+      if ("stats" in d) renderStats(d.stats);
     }).catch(() => {});
-    refresh(); setInterval(refresh, 3000);
+
+    const handleRealtimeEvent = msg => {
+      if (!msg || typeof msg !== "object") return;
+      const payload = msg.event ? msg : (msg.data && msg.data.event ? msg.data : null);
+      if (!payload) {
+        refresh();
+        return;
+      }
+      const info = payload.data || {};
+      if (payload.event === "tab_violation") {
+        const studentName = esc(info.student_name || "Student");
+        const atTime = esc(info.at || "");
+        const count = info.violations || 1;
+        const detail = info.detail ? ` (${esc(info.detail)})` : "";
+        alertText.innerHTML = `<b>Tab-switch warning:</b> ${studentName} left the exam screen at ${atTime}${detail} · Total violations: <b>${count}</b>`;
+        alertBanner.hidden = false;
+      }
+      refresh();
+    };
+
+    const connectPubSub = () => {
+      const tokenUrl = live.dataset.pubsubUrl;
+      if (!tokenUrl) return;
+      fetch(tokenUrl, {cache: "no-store"})
+        .then(r => r.ok ? r.json() : null)
+        .then(cfg => {
+          if (!cfg || !cfg.enabled || !cfg.url) {
+            statusChip.className = "qc-chip";
+            statusChip.textContent = "Local sync active";
+            return;
+          }
+          try {
+            const ws = new WebSocket(cfg.url);
+            ws.onopen = () => {
+              statusChip.className = "qc-chip success";
+              statusChip.textContent = "Azure Web PubSub · Connected";
+            };
+            ws.onmessage = evt => {
+              try {
+                handleRealtimeEvent(JSON.parse(evt.data));
+              } catch (_) {
+                refresh();
+              }
+            };
+            ws.onclose = () => {
+              statusChip.className = "qc-chip";
+              statusChip.textContent = "Local sync active";
+              setTimeout(connectPubSub, 10000);
+            };
+            ws.onerror = () => {
+              ws.close();
+            };
+          } catch (_) {
+            statusChip.className = "qc-chip";
+            statusChip.textContent = "Local sync active";
+          }
+        })
+        .catch(() => {
+          statusChip.className = "qc-chip";
+          statusChip.textContent = "Local sync active";
+        });
+    };
+
+    refresh();
+    connectPubSub();
+    setInterval(refresh, 3000);
   })();
 </script>
 {% endblock %}
