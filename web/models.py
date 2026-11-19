@@ -37,10 +37,11 @@ DEFAULT_POLICY = {
 class User(db.Model):
     __tablename__ = "users"
     id = db.Column(db.Integer, primary_key=True)
-    # Entra object id (oid claim), or "dev:<email>" in dev auth mode.
+    # Entra object id (oid claim), "local:<email>" for password auth, or "dev:<email>" in dev mode.
     external_id = db.Column(db.String(128), unique=True, nullable=False)
     name = db.Column(db.Unicode(200), nullable=False)
     email = db.Column(db.String(255))
+    password_hash = db.Column(db.String(255))
     role = db.Column(db.String(20), nullable=False)  # "teacher" | "student"
     created_at = db.Column(db.DateTime, default=utcnow)
 

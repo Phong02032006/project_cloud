@@ -1088,6 +1088,8 @@ def test_private_quiz_permissions_assignments_and_realtime_monitoring(app):
 def test_auto_migration_from_legacy_sqlite_schema(tmp_path):
     import sqlite3
 
+    from models import User
+
     db_file = tmp_path / "legacy.db"
     conn = sqlite3.connect(db_file)
     conn.executescript(
@@ -1137,8 +1139,52 @@ def test_auto_migration_from_legacy_sqlite_schema(tmp_path):
     })
     with migrated_app.app_context():
         exam = db.session.get(Exam, 1)
+        user = db.session.get(User, 1)
         assert exam.visibility == "private"
         assert exam.access_code and len(exam.access_code) == 6
+        assert user.password_hash is None
 
+
+def test_register_and_password_login_in_entra_mode(app):
+    app.config["AUTH_MODE"] = "entra"
+    c = app.test_client()
+
+    # Login page offers both Microsoft Entra ID button and email/password + register link
+    login_html = c.get("/login").get_data(as_text=True)
+    assert "Sign in with Microsoft Entra ID" in login_html and "/auth/entra" in login_html and "/register" in login_html
+
+    # Validation: password too short / mismatch
+    token = csrf(c, "/register")
+    bad = c.post("/register", data={
+        "csrf": token, "name": "New User", "email": "new@x.edu",
+        "password": "123", "confirm_password": "123", "role": "student",
+    })
+    assert "at least 6 characters" in bad.get_data(as_text=True)
+
+    # Registration ignores any tampered role=teacher and always creates a student
+    ok = c.post("/register", data={
+        "csrf": token, "name": "New Student", "email": "new@x.edu",
+        "password": "secret123", "confirm_password": "secret123", "role": "teacher",
+    })
+    assert ok.status_code == 302 and ok.headers["Location"].endswith("/")
+    assert "New Student" in c.get("/student").get_data(as_text=True)
+    assert c.get("/teacher").status_code == 403
+
+    # Logout of a local user stays in the app (does not redirect to Microsoft logout)
+    out = c.post("/logout", data={"csrf": csrf(c, "/student")})
+    assert out.status_code == 302 and out.headers["Location"].endswith("/")
+
+    # Duplicate email registration is rejected
+    dup = c.post("/register", data={
+        "csrf": csrf(c, "/register"), "name": "Dup", "email": "new@x.edu",
+        "password": "secret123", "confirm_password": "secret123", "role": "student",
+    })
+    assert "already exists" in dup.get_data(as_text=True)
+
+    # Wrong password fails, right password succeeds
+    wrong = c.post("/login", data={"csrf": csrf(c, "/login"), "email": "new@x.edu", "password": "wrong"})
+    assert "Invalid email or password" in wrong.get_data(as_text=True)
+    right = c.post("/login", data={"csrf": csrf(c, "/login"), "email": "new@x.edu", "password": "secret123"})
+    assert right.status_code == 302 and "New Student" in c.get("/student").get_data(as_text=True)
 
 

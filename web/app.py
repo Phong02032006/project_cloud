@@ -30,14 +30,19 @@ EMAIL_RE = re.compile(r"^[^@\s,;]+@[^@\s,;]+\.[^@\s,;]+$")
 
 def _ensure_schema(app):
     """Safely add missing columns, indexes and tables on existing SQLite or Azure SQL databases without losing data."""
+    migrations = (
+        ("questions", "image_url", "VARCHAR(500) NULL"),
+        ("users", "password_hash", "VARCHAR(255) NULL"),
+    )
     with app.app_context():
         try:
             inspector = inspect(db.engine)
-            if inspector.has_table("questions"):
-                cols = {c["name"] for c in inspector.get_columns("questions")}
-                if "image_url" not in cols:
-                    db.session.execute(text("ALTER TABLE questions ADD image_url VARCHAR(500) NULL"))
-                    db.session.commit()
+            for table, col, col_type in migrations:
+                if inspector.has_table(table):
+                    cols = {c["name"] for c in inspector.get_columns(table)}
+                    if col not in cols:
+                        db.session.execute(text(f"ALTER TABLE {table} ADD {col} {col_type}"))
+                        db.session.commit()
             if inspector.has_table("exams"):
                 exam_cols = {c["name"] for c in inspector.get_columns("exams")}
                 if "visibility" not in exam_cols:

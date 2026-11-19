@@ -8,14 +8,14 @@ if web_dir not in sys.path:
 
 from web.app import _ensure_schema, app, db  # noqa: E402
 
-# Automatically ensure Azure SQL tables exist on first startup
+# Automatically ensure Azure SQL tables and new columns exist on startup
 with app.app_context():
     try:
         db.create_all()
         _ensure_schema(app)
         app.logger.info("Database tables verified/created successfully.")
     except Exception as e:
-        app.logger.warning("Could not auto-create tables on startup: %s", e)
+        app.logger.warning("Could not auto-create/migrate tables on startup: %s", e)
 
 if __name__ == "__main__":
     app.run()
