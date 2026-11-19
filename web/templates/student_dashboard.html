@@ -5,8 +5,14 @@
 <div class="qc-page-head">
   <div>
     <div class="qc-section-title">Student space</div>
-    <h2>Hello, {{ g.user.name }} 👋</h2>
+    <h2>Hello, {{ g.user.name }}</h2>
   </div>
+  <form method="post" action="{{ url_for('student_join_exam') }}" class="d-flex align-items-center gap-2 m-0">
+    <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+    <label class="small fw-semibold text-secondary text-nowrap d-none d-sm-inline mb-0" for="join-access-code">Mã bài thi:</label>
+    <input id="join-access-code" name="access_code" class="form-control form-control-sm text-uppercase" placeholder="Nhập mã (VD: QC842A)" maxlength="16" style="width: 195px;" required>
+    <button type="submit" class="btn btn-sm btn-primary text-nowrap"><i class="bi bi-key"></i> Mở bài thi</button>
+  </form>
 </div>
 
 <div class="row g-3 mb-4">
@@ -15,22 +21,46 @@
   <div class="col-4"><div class="qc-card qc-stat h-100"><div class="icon tone-amber"><i class="bi bi-award"></i></div><div><div class="value">{{ done|selectattr('passed')|list|length }}</div><div class="label">Certificates earned</div></div></div></div>
 </div>
 
-<div class="qc-section-title mb-3">Exams for you</div>
-<div class="row g-3">
+<div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-3">
+  <div class="qc-section-title m-0">Exams for you</div>
+  <div class="d-flex flex-wrap gap-2" id="exam-filter-tabs">
+    <button type="button" class="btn btn-sm btn-primary js-filter-btn" data-filter="all">
+      Tất cả ({{ exams|length }})
+    </button>
+    <button type="button" class="btn btn-sm btn-ghost js-filter-btn" data-filter="assigned">
+      Bài thi được giao ({{ assigned_exams|length }})
+    </button>
+    <button type="button" class="btn btn-sm btn-ghost js-filter-btn" data-filter="public">
+      Đề công khai ({{ public_exams|length }})
+    </button>
+  </div>
+</div>
+
+<div class="row g-3" id="student-exam-list">
   {% for e in exams %}
     {% set s = mine.get(e.id) %}
-    <div class="col-md-6 col-lg-4">
+    {% set is_assigned = e.id in assigned_ids %}
+    {% set is_public = e.visibility == 'public' %}
+    <div class="col-md-6 col-lg-4 js-exam-card" data-assigned="{{ '1' if is_assigned else '0' }}" data-public="{{ '1' if is_public else '0' }}">
       <div class="qc-card qc-card-hover p-4 h-100 d-flex flex-column">
-        <div class="d-flex justify-content-between mb-2">
-          {% if s and s.review == 'withheld' %}<span class="qc-chip warning"><i class="bi bi-hourglass-split"></i> Under review</span>
-          {% elif s and s.review in ('cancelled', 'revoked') %}<span class="qc-chip danger"><i class="bi bi-x-octagon"></i> {{ s.review|capitalize }}</span>
-          {% elif s and s.status == 'graded' %}
-            {% if s.passed %}<span class="qc-chip success"><i class="bi bi-patch-check-fill"></i> Passed · {{ s.percent|num }}%</span>
-            {% else %}<span class="qc-chip danger">Failed · {{ s.percent|num }}%</span>{% endif %}
-          {% elif s and s.status == 'in_progress' %}<span class="qc-chip info"><i class="bi bi-stopwatch"></i> In progress</span>
-          {% elif s %}<span class="qc-chip warning">Grading</span>
-          {% else %}<span class="qc-chip info"><i class="bi bi-hourglass-split"></i> Not started</span>{% endif %}
-          <span class="small text-secondary">{{ e.teacher.name }}</span>
+        <div class="d-flex justify-content-between align-items-start gap-2 mb-2">
+          <div class="d-flex flex-wrap gap-1">
+            {% if s and s.review == 'withheld' %}<span class="qc-chip warning"><i class="bi bi-hourglass-split"></i> Under review</span>
+            {% elif s and s.review in ('cancelled', 'revoked') %}<span class="qc-chip danger"><i class="bi bi-x-octagon"></i> {{ s.review|capitalize }}</span>
+            {% elif s and s.status == 'graded' %}
+              {% if s.passed %}<span class="qc-chip success"><i class="bi bi-patch-check-fill"></i> Passed · {{ s.percent|num }}%</span>
+              {% else %}<span class="qc-chip danger">Failed · {{ s.percent|num }}%</span>{% endif %}
+            {% elif s and s.status == 'in_progress' %}<span class="qc-chip info"><i class="bi bi-stopwatch"></i> In progress</span>
+            {% elif s %}<span class="qc-chip warning">Grading</span>
+            {% else %}<span class="qc-chip info"><i class="bi bi-hourglass-split"></i> Not started</span>{% endif %}
+            {% if is_assigned %}
+              <span class="qc-chip warning"><i class="bi bi-person-check"></i> Bài thi được giao</span>
+            {% endif %}
+            {% if is_public %}
+              <span class="qc-chip"><i class="bi bi-globe2"></i> Đề công khai</span>
+            {% endif %}
+          </div>
+          <span class="small text-secondary text-nowrap">{{ e.teacher.name }}</span>
         </div>
         <h5>{{ e.title }}</h5>
         <p class="text-secondary small flex-grow-1">{{ e.description }}</p>
@@ -66,4 +96,35 @@
     <div class="col"><div class="qc-card qc-empty"><i class="bi bi-cup-hot"></i>No exams are open right now. Check back later!</div></div>
   {% endfor %}
 </div>
+<div class="qc-card qc-empty mt-3" id="filter-empty-state" hidden>
+  <i class="bi bi-inbox"></i>Không có bài thi nào trong mục này.
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+  (() => {
+    const btns = document.querySelectorAll(".js-filter-btn");
+    const cards = document.querySelectorAll(".js-exam-card");
+    const emptyState = document.getElementById("filter-empty-state");
+    if (!btns.length || !cards.length) return;
+    btns.forEach(btn => {
+      btn.addEventListener("click", () => {
+        const mode = btn.dataset.filter;
+        btns.forEach(b => {
+          b.classList.toggle("btn-primary", b === btn);
+          b.classList.toggle("btn-ghost", b !== btn);
+        });
+        let visibleCount = 0;
+        cards.forEach(c => {
+          const show = mode === "all"
+            || (mode === "assigned" && c.dataset.assigned === "1")
+            || (mode === "public" && c.dataset.public === "1");
+          c.hidden = !show;
+          if (show) visibleCount++;
+        });
+        if (emptyState) emptyState.hidden = visibleCount > 0;
+      });
+    });
+  })();
+</script>
 {% endblock %}

@@ -43,7 +43,7 @@ def test_full_flow(app):
 
     t = csrf(teacher, "/teacher")
     r = teacher.post("/teacher/exams/new", data={"csrf": t, "title": "Cloud Quiz", "duration_minutes": "10",
-                                                 "pass_percent": "60"})
+                                                 "pass_percent": "60", "visibility": "public"})
     exam_id = int(r.headers["Location"].rstrip("/").split("/")[-1])
 
     # Option C left blank: the correct index for "D" must be remapped to 2.
@@ -98,7 +98,7 @@ def test_grader_failure_marks_error_and_regrade(app, monkeypatch):
     login(teacher, "T", "t@x.edu", "teacher")
     login(student, "S", "s@x.edu", "student")
     t = csrf(teacher, "/teacher")
-    r = teacher.post("/teacher/exams/new", data={"csrf": t, "title": "E"})
+    r = teacher.post("/teacher/exams/new", data={"csrf": t, "title": "E", "visibility": "public"})
     exam_id = int(r.headers["Location"].split("/")[-1])
     teacher.post(f"/teacher/exams/{exam_id}/questions", data={
         "csrf": t, "text": "Q", "options": ["a", "b"], "correct": ["1"]})
@@ -152,7 +152,7 @@ def test_async_sqs_flow_with_callback(app, monkeypatch, tmp_path):
     login(teacher, "T", "t@x.edu", "teacher")
     login(student, "S", "s@x.edu", "student")
     t = csrf(teacher, "/teacher")
-    r = teacher.post("/teacher/exams/new", data={"csrf": t, "title": "Async"})
+    r = teacher.post("/teacher/exams/new", data={"csrf": t, "title": "Async", "visibility": "public"})
     exam_id = int(r.headers["Location"].split("/")[-1])
     teacher.post(f"/teacher/exams/{exam_id}/questions", data={
         "csrf": t, "text": "Q", "options": ["a", "b"], "correct": ["1"]})
@@ -197,7 +197,7 @@ def test_async_stuck_submission_can_be_resent(app, monkeypatch):
     login(teacher, "T", "t@x.edu", "teacher")
     login(student, "S", "s@x.edu", "student")
     t = csrf(teacher, "/teacher")
-    r = teacher.post("/teacher/exams/new", data={"csrf": t, "title": "E"})
+    r = teacher.post("/teacher/exams/new", data={"csrf": t, "title": "E", "visibility": "public"})
     exam_id = int(r.headers["Location"].split("/")[-1])
     teacher.post(f"/teacher/exams/{exam_id}/questions", data={
         "csrf": t, "text": "Q", "options": ["a", "b"], "correct": ["0"]})
@@ -221,7 +221,8 @@ def _setup(app, questions=(("First question?", ["a", "b"], ["0"]), ("Second ques
     login(teacher, "T", "t@x.edu", "teacher")
     login(student, "S", "s@x.edu", "student")
     t = csrf(teacher, "/teacher")
-    r = teacher.post("/teacher/exams/new", data={"csrf": t, "title": "E", "duration_minutes": duration})
+    r = teacher.post("/teacher/exams/new", data={"csrf": t, "title": "E", "duration_minutes": duration,
+                                                 "visibility": "public"})
     exam_id = int(r.headers["Location"].split("/")[-1])
     for text, options, correct in questions:
         teacher.post(f"/teacher/exams/{exam_id}/questions", data={
@@ -962,4 +963,182 @@ def test_pubsub_progress_and_tab_switch_flow(app, monkeypatch):
     assert live_after["attempts"] == []
     assert live_after["submissions"][0]["status"] == "graded" and live_after["submissions"][0]["score"] == 2.0
     assert live_after["stats"]["count"] == 1
+
+
+def test_private_quiz_permissions_assignments_and_realtime_monitoring(app):
+    from models import QuizAssignment
+
+    teacher, other_teacher = app.test_client(), app.test_client()
+    student_added, student_outsider, student_future = app.test_client(), app.test_client(), app.test_client()
+
+    login(teacher, "Teacher One", "t1@school.edu", "teacher")
+    login(other_teacher, "Teacher Two", "t2@school.edu", "teacher")
+    login(student_added, "Student Added", "added@school.edu", "student")
+    login(student_outsider, "Student Outsider", "outsider@school.edu", "student")
+
+    t = csrf(teacher, "/teacher")
+    # Default visibility is private and auto-generates a 6-character access_code
+    r = teacher.post("/teacher/exams/new", data={"csrf": t, "title": "Private Midterm", "duration_minutes": "15"})
+    exam_id = int(r.headers["Location"].split("/")[-1])
+
+    with app.app_context():
+        exam = db.session.get(Exam, exam_id)
+        assert exam.visibility == "private"
+        assert exam.access_code and len(exam.access_code) == 6 and exam.access_code.isalnum()
+        access_code = exam.access_code
+
+    teacher.post(f"/teacher/exams/{exam_id}/questions", data={
+        "csrf": t, "text": "Cloud IAM?", "options": ["Entra ID", "Paint"], "correct": ["0"], "points": "2"})
+    teacher.post(f"/teacher/exams/{exam_id}/publish", data={"csrf": t})
+
+    # Another teacher gets 403 on edit, candidate management, settings, results, live.json, pubsub token
+    t2 = csrf(other_teacher, "/teacher")
+    assert other_teacher.get(f"/teacher/exams/{exam_id}").status_code == 403
+    assert other_teacher.get(f"/teacher/exams/{exam_id}/students").status_code == 403
+    assert other_teacher.post(f"/teacher/exams/{exam_id}/students", data={
+        "csrf": t2, "bulk_emails": "added@school.edu"}).status_code == 403
+    assert other_teacher.post(f"/teacher/exams/{exam_id}/visibility", data={
+        "csrf": t2, "visibility": "public"}).status_code == 403
+    assert other_teacher.get(f"/teacher/exams/{exam_id}/results").status_code == 403
+    assert other_teacher.get(f"/teacher/exams/{exam_id}/live.json").status_code == 403
+    assert other_teacher.get(f"/api/exams/{exam_id}/pubsub-token").status_code == 403
+
+    # Neither student is assigned yet -> hidden from dashboard, 403 on direct URLs and pubsub token
+    assert "Private Midterm" not in student_added.get("/student").get_data(as_text=True)
+    assert student_added.get(f"/student/exams/{exam_id}").status_code == 403
+    assert student_added.get(f"/exam/{exam_id}").status_code == 403
+    assert student_added.get(f"/student/exams/{exam_id}/attempts").status_code == 403
+    assert student_added.post(f"/student/exams/{exam_id}/start",
+                              data={"csrf": csrf(student_added, "/student")}).status_code == 403
+    assert student_added.get(f"/api/exams/{exam_id}/pubsub-token").status_code == 403
+
+    # Teacher adds student_added via quick-select and pre-assigns future@school.edu via bulk paste
+    teacher.post(f"/teacher/exams/{exam_id}/students", data={
+        "csrf": t,
+        "student_emails": ["ADDED@school.edu"],
+        "bulk_emails": "  Future@School.EDU ; added@school.edu,\ninvalid-email\n",
+    })
+    manage_html = teacher.get(f"/teacher/exams/{exam_id}").get_data(as_text=True)
+    assert "added@school.edu" in manage_html and "Đã có tài khoản" in manage_html
+    assert "future@school.edu" in manage_html and "Chờ đăng nhập" in manage_html
+
+    with app.app_context():
+        rows = QuizAssignment.query.filter_by(quiz_id=exam_id).all()
+        assert [a.student_email for a in rows] == ["added@school.edu", "future@school.edu"]
+
+    # Realtime monitoring for private exam pre-populates both assigned students as "not_started" (Chưa vào thi)
+    results_html = teacher.get(f"/teacher/exams/{exam_id}/results").get_data(as_text=True)
+    assert "Chưa vào thi" in results_html and "added@school.edu" in results_html and "future@school.edu" in results_html
+    live_init = teacher.get(f"/teacher/exams/{exam_id}/live.json").get_json()
+    assert [(r["email"], r["status"]) for r in live_init["submissions"]] == [
+        ("added@school.edu", "not_started"),
+        ("future@school.edu", "not_started"),
+    ]
+
+    # student_added now sees the exam on dashboard, can request pubsub token, and starts the exam
+    dash_added = student_added.get("/student").get_data(as_text=True)
+    assert "Private Midterm" in dash_added and "Bài thi được giao" in dash_added
+    assert student_added.get(f"/api/exams/{exam_id}/pubsub-token").status_code == 200
+
+    # student_outsider still cannot see or access the exam
+    assert "Private Midterm" not in student_outsider.get("/student").get_data(as_text=True)
+    assert student_outsider.get(f"/student/exams/{exam_id}").status_code == 403
+    assert student_outsider.get(f"/exam/{exam_id}").status_code == 403
+    assert student_outsider.get(f"/api/exams/{exam_id}/pubsub-token").status_code == 403
+
+    # student_added opens the exam -> live monitoring updates in-place to "in_progress" without duplicating rows
+    s_added = csrf(student_added, f"/student/exams/{exam_id}")
+    live_running = teacher.get(f"/teacher/exams/{exam_id}/live.json").get_json()
+    assert [(r["email"], r["status"]) for r in live_running["submissions"]] == [
+        ("added@school.edu", "in_progress"),
+        ("future@school.edu", "not_started"),
+    ]
+
+    # student_added switches tab and submits -> live monitoring updates in-place to "graded" with score & violations
+    student_added.post("/submissions/1/events", data={"csrf": s_added, "type": "tab_switch", "detail": "left tab"})
+    student_added.post(f"/student/exams/{exam_id}", data={"csrf": s_added, "q1": "0"})
+    live_done = teacher.get(f"/teacher/exams/{exam_id}/live.json").get_json()
+    assert [(r["email"], r["status"], r["score"], r["violations"]) for r in live_done["submissions"]] == [
+        ("added@school.edu", "graded", 2.0, 1),
+        ("future@school.edu", "not_started", None, 0),
+    ]
+
+    # Pre-assigned student_future logs in for the first time and immediately has access
+    login(student_future, "Future Student", "Future@School.edu", "student")
+    assert "Private Midterm" in student_future.get("/student").get_data(as_text=True)
+    assert student_future.get(f"/student/exams/{exam_id}").status_code == 200
+
+    # student_outsider joins with wrong access_code -> rejected; joins with right access_code -> unlocked
+    s_out = csrf(student_outsider, "/student")
+    student_outsider.post("/student/join", data={"csrf": s_out, "access_code": "WRONG1"})
+    assert student_outsider.get(f"/student/exams/{exam_id}").status_code == 403
+
+    student_outsider.post("/student/join", data={"csrf": s_out, "access_code": access_code.lower()})
+    assert "Private Midterm" in student_outsider.get("/student").get_data(as_text=True)
+    assert student_outsider.get(f"/student/exams/{exam_id}").status_code == 200
+
+    # Removing an assignment revokes access for that student
+    with app.app_context():
+        out_assign = QuizAssignment.query.filter_by(quiz_id=exam_id, student_email="outsider@school.edu").one()
+        aid = out_assign.id
+    teacher.post(f"/teacher/exams/{exam_id}/students/{aid}/delete", data={"csrf": t})
+    assert student_outsider.get(f"/student/exams/{exam_id}").status_code == 403
+
+
+def test_auto_migration_from_legacy_sqlite_schema(tmp_path):
+    import sqlite3
+
+    db_file = tmp_path / "legacy.db"
+    conn = sqlite3.connect(db_file)
+    conn.executescript(
+        """
+        CREATE TABLE users (
+            id INTEGER PRIMARY KEY,
+            external_id VARCHAR(128) NOT NULL UNIQUE,
+            name VARCHAR(200) NOT NULL,
+            email VARCHAR(255),
+            role VARCHAR(20) NOT NULL,
+            created_at DATETIME
+        );
+        CREATE TABLE exams (
+            id INTEGER PRIMARY KEY,
+            title VARCHAR(300) NOT NULL,
+            description TEXT,
+            duration_minutes INTEGER,
+            pass_percent FLOAT,
+            published BOOLEAN NOT NULL,
+            policy JSON,
+            max_attempts INTEGER NOT NULL,
+            selection_deadline DATETIME,
+            teacher_id INTEGER NOT NULL,
+            created_at DATETIME,
+            current_version_id INTEGER
+        );
+        CREATE TABLE questions (
+            id INTEGER PRIMARY KEY,
+            exam_id INTEGER NOT NULL,
+            text TEXT NOT NULL,
+            options JSON NOT NULL,
+            correct JSON NOT NULL,
+            points FLOAT
+        );
+        INSERT INTO users (id, external_id, name, email, role) VALUES (1, 'dev:t@x.edu', 'T', 't@x.edu', 'teacher');
+        INSERT INTO exams (id, title, duration_minutes, pass_percent, published, max_attempts, teacher_id)
+        VALUES (1, 'Legacy Exam', 15, 50, 1, 1, 1);
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    migrated_app = create_app({
+        "TESTING": True,
+        "SQLALCHEMY_DATABASE_URI": f"sqlite:///{db_file}",
+        "AUTH_MODE": "dev",
+    })
+    with migrated_app.app_context():
+        exam = db.session.get(Exam, 1)
+        assert exam.visibility == "private"
+        assert exam.access_code and len(exam.access_code) == 6
+
+
 

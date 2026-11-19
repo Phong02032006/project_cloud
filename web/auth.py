@@ -36,6 +36,7 @@ def _role_from_claims(claims):
 
 
 def _sign_in(external_id, name, email, role):
+    email = (email or "").strip().lower()
     user = User.query.filter_by(external_id=external_id).first()
     if user is None:
         user = User(external_id=external_id, name=name, email=email, role=role)

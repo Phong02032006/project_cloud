@@ -1,12 +1,24 @@
+import secrets
 from datetime import datetime, timedelta, timezone
 
 from flask_sqlalchemy import SQLAlchemy
+from sqlalchemy.orm import validates
 
 db = SQLAlchemy()
+
+ACCESS_CODE_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 
 
 def utcnow():
     return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def generate_access_code():
+    for _ in range(25):
+        code = "".join(secrets.choice(ACCESS_CODE_CHARS) for _ in range(6))
+        if not Exam.query.filter_by(access_code=code).first():
+            return code
+    return secrets.token_hex(3).upper()
 
 
 # Managed-mode settings. Violations are always logged when managed is on; the rest are opt-in actions.
@@ -35,12 +47,23 @@ class User(db.Model):
 
 class Exam(db.Model):
     __tablename__ = "exams"
+    __table_args__ = (
+        db.Index(
+            "uq_exams_access_code",
+            "access_code",
+            unique=True,
+            sqlite_where=db.text("access_code IS NOT NULL"),
+            mssql_where=db.text("access_code IS NOT NULL"),
+        ),
+    )
     id = db.Column(db.Integer, primary_key=True)
     title = db.Column(db.Unicode(300), nullable=False)
     description = db.Column(db.UnicodeText, default="")
     duration_minutes = db.Column(db.Integer, default=15)
     pass_percent = db.Column(db.Float, default=50)
     published = db.Column(db.Boolean, default=False, nullable=False)
+    visibility = db.Column(db.String(20), default="private", nullable=False)  # "private" | "public"
+    access_code = db.Column(db.String(16), nullable=True)
     policy = db.Column(db.JSON)
     max_attempts = db.Column(db.Integer, default=1, nullable=False)
     # With several attempts the student picks one; past this the best one is picked for them.
@@ -63,6 +86,13 @@ class Exam(db.Model):
     certificates = db.relationship("Certificate", backref="exam", cascade="all, delete-orphan")
     tickets = db.relationship("RetakeTicket", backref="exam", cascade="all, delete-orphan")
     submissions = db.relationship("Submission", backref="exam", cascade="all, delete-orphan")
+    assignments = db.relationship("QuizAssignment", backref="exam", cascade="all, delete-orphan",
+                                  order_by="QuizAssignment.id")
+
+    def ensure_access_code(self):
+        if (self.visibility or "private") == "private" and not self.access_code:
+            self.access_code = generate_access_code()
+        return self.access_code
 
     # questions of the current version; kept the old name so existing callers work unchanged
     @property
@@ -84,6 +114,26 @@ class Exam(db.Model):
         db.session.add(version)
         self.current_version = version
         return version
+
+
+class QuizAssignment(db.Model):
+    __tablename__ = "quiz_assignments"
+    __table_args__ = (db.UniqueConstraint("quiz_id", "student_email", name="uq_quiz_assignment_email"),)
+    id = db.Column(db.Integer, primary_key=True)
+    quiz_id = db.Column(db.Integer, db.ForeignKey("exams.id", ondelete="CASCADE"), nullable=False, index=True)
+    student_email = db.Column(db.String(255), nullable=False, index=True)
+    assigned_by = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True)
+    created_at = db.Column(db.DateTime, default=utcnow, nullable=False)
+
+    assigner = db.relationship("User", foreign_keys=[assigned_by])
+
+    @validates("student_email")
+    def _normalize_email(self, _key, value):
+        return (value or "").strip().lower()
+
+    @property
+    def quiz(self):
+        return self.exam
 
 
 # immutable snapshot of an exam; never updated after insert

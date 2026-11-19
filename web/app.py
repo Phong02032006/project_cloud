@@ -1,6 +1,7 @@
 import csv
 import io
 import json
+import re
 import secrets
 import statistics
 from datetime import datetime, timedelta
@@ -20,14 +21,15 @@ import storage_client
 from auth import bp as auth_bp
 from auth import login_required
 from config import Config
-from models import (DEFAULT_POLICY, AttemptEvent, Certificate, Exam, ExamVersion, Question, RetakeTicket, Submission,
-                    User, db, utcnow)
+from models import (DEFAULT_POLICY, AttemptEvent, Certificate, Exam, ExamVersion, Question, QuizAssignment,
+                    RetakeTicket, Submission, User, db, generate_access_code, utcnow)
 
 LETTERS = "ABCDEFGH"
+EMAIL_RE = re.compile(r"^[^@\s,;]+@[^@\s,;]+\.[^@\s,;]+$")
 
 
 def _ensure_schema(app):
-    """Safely add questions.image_url on existing SQLite or Azure SQL databases without losing data."""
+    """Safely add missing columns, indexes and tables on existing SQLite or Azure SQL databases without losing data."""
     with app.app_context():
         try:
             inspector = inspect(db.engine)
@@ -36,9 +38,35 @@ def _ensure_schema(app):
                 if "image_url" not in cols:
                     db.session.execute(text("ALTER TABLE questions ADD image_url VARCHAR(500) NULL"))
                     db.session.commit()
+            if inspector.has_table("exams"):
+                exam_cols = {c["name"] for c in inspector.get_columns("exams")}
+                if "visibility" not in exam_cols:
+                    db.session.execute(
+                        text("ALTER TABLE exams ADD visibility VARCHAR(20) NOT NULL DEFAULT 'private'")
+                    )
+                    db.session.commit()
+                if "access_code" not in exam_cols:
+                    db.session.execute(text("ALTER TABLE exams ADD access_code VARCHAR(16) NULL"))
+                    db.session.commit()
+                exam_indexes = {idx["name"] for idx in inspector.get_indexes("exams")}
+                if "uq_exams_access_code" not in exam_indexes:
+                    db.session.execute(
+                        text(
+                            "CREATE UNIQUE INDEX uq_exams_access_code ON exams (access_code) "
+                            "WHERE access_code IS NOT NULL"
+                        )
+                    )
+                    db.session.commit()
+                if not inspector.has_table("quiz_assignments"):
+                    QuizAssignment.__table__.create(bind=db.engine, checkfirst=True)
+                missing_codes = Exam.query.filter_by(visibility="private", access_code=None).all()
+                if missing_codes:
+                    for exam in missing_codes:
+                        exam.access_code = generate_access_code()
+                    db.session.commit()
         except Exception:
             db.session.rollback()
-            app.logger.warning("Auto-migration for questions.image_url skipped", exc_info=True)
+            app.logger.warning("Auto-migration skipped", exc_info=True)
 
 
 def create_app(overrides=None):
@@ -84,9 +112,36 @@ def register_security(app):
     app.jinja_env.filters["plural"] = lambda n, word: f"{n} {word}{'' if n == 1 else 's'}"
 
 
+def is_quiz_owner(user, quiz):
+    if user is None or quiz is None:
+        return False
+    if getattr(user, "role", None) == "admin":
+        return True
+    return user.role == "teacher" and quiz.teacher_id == user.id
+
+
+def is_student_assigned(user, quiz):
+    if user is None or quiz is None or not user.email:
+        return False
+    email = user.email.strip().lower()
+    return QuizAssignment.query.filter_by(quiz_id=quiz.id, student_email=email).first() is not None
+
+
+def can_access_quiz(user, quiz):
+    if user is None or quiz is None:
+        return False
+    if is_quiz_owner(user, quiz):
+        return True
+    if user.role != "student" or not quiz.published:
+        return False
+    if (quiz.visibility or "private") == "public":
+        return True
+    return is_student_assigned(user, quiz)
+
+
 def _own_exam(exam_id):
     exam = db.get_or_404(Exam, exam_id)
-    if exam.teacher_id != g.user.id:
+    if not is_quiz_owner(g.user, exam):
         abort(403)
     return exam
 
@@ -464,11 +519,16 @@ def register_routes(app):
             if not title:
                 flash("Exam title is required.", "danger")
                 return render_template("exam_form.html")
+            visibility = request.form.get("visibility", "private").strip().lower()
+            if visibility not in ("private", "public"):
+                visibility = "private"
             exam = Exam(
                 title=title,
                 description=request.form.get("description", "").strip(),
                 duration_minutes=max(1, request.form.get("duration_minutes", 15, type=int)),
                 pass_percent=min(100, max(0, request.form.get("pass_percent", 50, type=float))),
+                visibility=visibility,
+                access_code=generate_access_code() if visibility == "private" else None,
                 teacher_id=g.user.id,
             )
             db.session.add(exam)
@@ -477,11 +537,119 @@ def register_routes(app):
             return redirect(url_for("exam_manage", exam_id=exam.id))
         return render_template("exam_form.html")
 
+    def _render_exam_manage(exam):
+        if exam.ensure_access_code() and db.session.is_modified(exam):
+            db.session.commit()
+        users_by_email = {(u.email or "").strip().lower(): u for u in User.query.all() if u.email}
+        all_students = User.query.filter_by(role="student").order_by(User.name, User.email).all()
+        assigned_emails = {(a.student_email or "").strip().lower() for a in exam.assignments}
+        return render_template(
+            "exam_manage.html",
+            exam=exam,
+            impact=_edit_impact(exam),
+            all_students=all_students,
+            users_by_email=users_by_email,
+            assigned_emails=assigned_emails,
+        )
+
     @app.route("/teacher/exams/<int:exam_id>")
     @login_required("teacher")
     def exam_manage(exam_id):
         exam = _own_exam(exam_id)
-        return render_template("exam_manage.html", exam=exam, impact=_edit_impact(exam))
+        return _render_exam_manage(exam)
+
+    @app.route("/teacher/exams/<int:exam_id>/visibility", methods=["POST"])
+    @login_required("teacher")
+    def exam_visibility(exam_id):
+        exam = _own_exam(exam_id)
+        vis = request.form.get("visibility", "").strip().lower()
+        if vis in ("private", "public"):
+            exam.visibility = vis
+            exam.ensure_access_code()
+            db.session.commit()
+            flash(
+                "Đã chuyển chế độ đề sang Riêng tư." if vis == "private" else "Đã chuyển chế độ đề sang Công khai.",
+                "success",
+            )
+        return redirect(url_for("exam_manage", exam_id=exam.id))
+
+    @app.route("/teacher/exams/<int:exam_id>/students", methods=["GET", "POST"])
+    @login_required("teacher")
+    def exam_students(exam_id):
+        exam = _own_exam(exam_id)
+        if request.method == "GET":
+            return _render_exam_manage(exam)
+
+        candidates = []
+        for em in request.form.getlist("student_emails"):
+            if em and em.strip():
+                candidates.append(em.strip().lower())
+        for sid in request.form.getlist("student_ids"):
+            if str(sid).isdigit():
+                stu = db.session.get(User, int(sid))
+                if stu and stu.email:
+                    candidates.append(stu.email.strip().lower())
+
+        raw_bulk = "\n".join(
+            filter(
+                None,
+                [
+                    request.form.get("bulk_emails", ""),
+                    request.form.get("emails", ""),
+                    request.form.get("student_email", ""),
+                ],
+            )
+        )
+        if raw_bulk.strip():
+            for token in re.split(r"[,;\r\n]+", raw_bulk):
+                if token.strip():
+                    candidates.append(token.strip().lower())
+
+        existing = {(a.student_email or "").strip().lower() for a in exam.assignments}
+        seen_batch = set()
+        added = 0
+        skipped = 0
+        invalid = []
+
+        for email in candidates:
+            if not EMAIL_RE.match(email):
+                invalid.append(email)
+            elif email in existing or email in seen_batch:
+                skipped += 1
+            else:
+                seen_batch.add(email)
+                db.session.add(QuizAssignment(quiz_id=exam.id, student_email=email, assigned_by=g.user.id))
+                added += 1
+
+        if added:
+            exam.ensure_access_code()
+            db.session.commit()
+
+        if added or skipped:
+            msg = f"Đã thêm {added} học sinh"
+            if skipped:
+                msg += f", bỏ qua {skipped} email đã có trong danh sách"
+            flash(msg + ".", "success" if added else "warning")
+        elif not invalid:
+            flash("Vui lòng chọn học sinh hoặc nhập email.", "warning")
+
+        if invalid:
+            flash(f"Bỏ qua {len(invalid)} email không đúng định dạng: {', '.join(invalid[:5])}", "danger")
+
+        return redirect(url_for("exam_manage", exam_id=exam.id))
+
+    @app.route("/teacher/exams/<int:exam_id>/students/<int:assignment_id>/delete", methods=["POST"])
+    @login_required("teacher")
+    def exam_student_delete(exam_id, assignment_id):
+        exam = _own_exam(exam_id)
+        assignment = db.get_or_404(QuizAssignment, assignment_id)
+        if assignment.quiz_id != exam.id:
+            abort(404)
+        removed_email = assignment.student_email
+        db.session.delete(assignment)
+        db.session.commit()
+        flash(f"Đã xóa {removed_email} khỏi danh sách thí sinh.", "success")
+        return redirect(url_for("exam_manage", exam_id=exam.id))
 
     @app.route("/teacher/exams/<int:exam_id>/questions", methods=["POST"])
     @login_required("teacher")
@@ -607,6 +775,10 @@ def register_routes(app):
     def exam_settings(exam_id):
         exam = _own_exam(exam_id)
         f = request.form
+        vis = f.get("visibility", "").strip().lower()
+        if vis in ("private", "public"):
+            exam.visibility = vis
+        exam.ensure_access_code()
         exam.duration_minutes = max(1, f.get("duration_minutes", exam.duration_minutes, type=int))
         exam.pass_percent = min(100, max(0, f.get("pass_percent", exam.pass_percent, type=float)))
         max_attempts = max(1, f.get("max_attempts", exam.max_attempts, type=int))
@@ -661,14 +833,145 @@ def register_routes(app):
         flash("Exam deleted.", "success")
         return redirect(url_for("teacher_dashboard"))
 
+    def _build_monitoring_rows(exam, tickets):
+        now = utcnow()
+        version_no = {v.id: i + 1 for i, v in enumerate(exam.versions)}
+        subs_sorted = sorted(exam.submissions, key=lambda s: (s.student.name, s.attempt_no))
+        initial_fn = app.jinja_env.filters["initial"]
+        attempts = []
+
+        for s in subs_sorted:
+            if s.status == "in_progress":
+                total_q = len(s.version.question_ids) if s.version else 0
+                answered_q = _answered_count(s)
+                seen_ago = int((now - s.last_seen_at).total_seconds()) if s.last_seen_at else None
+                remaining = max(0, int((s.deadline - now).total_seconds()))
+                last_dt = s.last_seen_at or s.started_at
+                attempts.append({
+                    "id": s.id,
+                    "attempt_no": s.attempt_no,
+                    "name": s.student.name,
+                    "email": s.student.email,
+                    "version": version_no.get(s.version_id),
+                    "managed": s.version.settings["managed"],
+                    "violations": s.violations,
+                    "locked": s.locked_at is not None,
+                    "lock_reason": s.lock_reason,
+                    "seen_ago": seen_ago,
+                    "remaining": remaining,
+                    "answered_count": answered_q,
+                    "total_questions": total_q,
+                    "updated_at": last_dt.strftime("%H:%M:%S"),
+                })
+
+        def _sub_row(s, is_last):
+            total_q = len(s.version.question_ids) if s.version else 0
+            answered_q = _answered_count(s)
+            last_dt = (s.last_seen_at or s.started_at) if s.status == "in_progress" else (s.submitted_at or s.started_at)
+            updated_display = (
+                last_dt.strftime("%H:%M:%S")
+                if s.status == "in_progress"
+                else last_dt.strftime("%b %d, %Y %H:%M")
+            )
+            return {
+                "id": s.id,
+                "student_id": s.student_id,
+                "name": s.student.name,
+                "initial": initial_fn(s.student.name),
+                "email": s.student.email,
+                "has_account": True,
+                "attempt_no": s.attempt_no,
+                "selected": s.selected,
+                "status": s.status,
+                "score": s.score,
+                "max_score": s.max_score,
+                "percent": s.percent,
+                "passed": s.passed,
+                "violations": s.violations,
+                "managed": s.version.settings["managed"],
+                "review": s.review,
+                "answered_count": answered_q,
+                "total_questions": total_q,
+                "submitted_at": s.submitted_at.strftime("%b %d, %Y %H:%M") if s.submitted_at else "",
+                "updated_at": updated_display,
+                "details_url": url_for("submission_view", sub_id=s.id),
+                "retake_url": url_for("ticket_grant", exam_id=exam.id, student_id=s.student_id),
+                "has_ticket": s.student_id in tickets,
+                "is_last_for_student": is_last,
+            }
+
+        submissions_data = []
+        if (exam.visibility or "private") == "public":
+            for idx, s in enumerate(subs_sorted):
+                is_last = (idx == len(subs_sorted) - 1) or (subs_sorted[idx + 1].student_id != s.student_id)
+                submissions_data.append(_sub_row(s, is_last))
+        else:
+            subs_by_email = {}
+            for s in sorted(exam.submissions, key=lambda x: x.attempt_no):
+                em = (s.student.email or "").strip().lower() if s.student else ""
+                subs_by_email.setdefault(em, []).append(s)
+            users_by_email = {(u.email or "").strip().lower(): u for u in User.query.all() if u.email}
+            seen_emails = set()
+            total_q_default = len(exam.questions)
+
+            for a in exam.assignments:
+                em = (a.student_email or "").strip().lower()
+                if not em or em in seen_emails:
+                    continue
+                seen_emails.add(em)
+                student_subs = subs_by_email.get(em, [])
+                if student_subs:
+                    for i, s in enumerate(student_subs):
+                        submissions_data.append(_sub_row(s, i == len(student_subs) - 1))
+                else:
+                    u = users_by_email.get(em)
+                    display_name = u.name if u else em.split("@")[0]
+                    submissions_data.append({
+                        "id": None,
+                        "student_id": u.id if u else None,
+                        "name": display_name,
+                        "initial": initial_fn(u.name if u else em),
+                        "email": em,
+                        "has_account": u is not None,
+                        "attempt_no": None,
+                        "selected": False,
+                        "status": "not_started",
+                        "score": None,
+                        "max_score": None,
+                        "percent": None,
+                        "passed": None,
+                        "violations": 0,
+                        "managed": exam.settings["managed"],
+                        "review": None,
+                        "answered_count": 0,
+                        "total_questions": total_q_default,
+                        "submitted_at": "",
+                        "updated_at": "—",
+                        "details_url": None,
+                        "retake_url": None,
+                        "has_ticket": False,
+                        "is_last_for_student": False,
+                    })
+
+            extra_subs = [
+                s
+                for s in subs_sorted
+                if ((s.student.email or "").strip().lower() if s.student else "") not in seen_emails
+            ]
+            for idx, s in enumerate(extra_subs):
+                is_last = (idx == len(extra_subs) - 1) or (extra_subs[idx + 1].student_id != s.student_id)
+                submissions_data.append(_sub_row(s, is_last))
+
+        return attempts, submissions_data
+
     @app.route("/teacher/exams/<int:exam_id>/results")
     @login_required("teacher")
     def exam_results(exam_id):
         exam = _own_exam(exam_id)
         _finalize_exam(app, exam)
-        subs = sorted(exam.submissions, key=lambda s: (s.student.name, s.attempt_no))
         tickets = {t.student_id: t for t in exam.tickets if t.is_open}
-        return render_template("exam_results.html", exam=exam, submissions=subs, stats=_exam_stats(exam),
+        _, rows = _build_monitoring_rows(exam, tickets)
+        return render_template("exam_results.html", exam=exam, submissions=rows, stats=_exam_stats(exam),
                                tickets=tickets)
 
     @app.route("/teacher/exams/<int:exam_id>/results.csv")
@@ -703,7 +1006,17 @@ def register_routes(app):
     @app.route("/student")
     @login_required("student")
     def student_dashboard():
-        exams = Exam.query.filter_by(published=True).order_by(Exam.created_at.desc()).all()
+        user_email = (g.user.email or "").strip().lower()
+        assigned_ids = (
+            {a.quiz_id for a in QuizAssignment.query.filter_by(student_email=user_email).all()}
+            if user_email
+            else set()
+        )
+        all_published = Exam.query.filter_by(published=True).order_by(Exam.created_at.desc()).all()
+        exams = [e for e in all_published if (e.visibility or "private") == "public" or e.id in assigned_ids]
+        assigned_exams = [e for e in exams if e.id in assigned_ids]
+        public_exams = [e for e in exams if (e.visibility or "private") == "public"]
+
         for exam_id in {s.exam_id for s in Submission.query.filter_by(student_id=g.user.id)}:
             _finalize(app, db.session.get(Exam, exam_id), g.user.id)
         by_exam = {}
@@ -714,15 +1027,56 @@ def register_routes(app):
                 or next((a for a in subs if a.selected), None) or subs[-1] for eid, subs in by_exam.items()}
         tickets = {t.exam_id: t for t in RetakeTicket.query.filter_by(student_id=g.user.id, claimed_at=None)
                    if t.is_open}
-        return render_template("student_dashboard.html", exams=exams, mine=mine, attempts=by_exam,
-                               tickets=tickets)
+        return render_template(
+            "student_dashboard.html",
+            exams=exams,
+            assigned_ids=assigned_ids,
+            assigned_exams=assigned_exams,
+            public_exams=public_exams,
+            mine=mine,
+            attempts=by_exam,
+            tickets=tickets,
+        )
+
+    @app.route("/student/join", methods=["POST"])
+    @login_required("student")
+    def student_join_exam():
+        code = request.form.get("access_code", "").strip().upper()
+        if not code:
+            flash("Vui lòng nhập mã bài thi.", "danger")
+            return redirect(url_for("student_dashboard"))
+        exam = Exam.query.filter_by(access_code=code).first()
+        if exam is None or (exam.visibility or "private") != "private":
+            flash("Mã bài thi không hợp lệ hoặc không tồn tại.", "danger")
+            return redirect(url_for("student_dashboard"))
+        email = (g.user.email or "").strip().lower()
+        if not email:
+            flash("Tài khoản của bạn chưa có email hợp lệ.", "danger")
+            return redirect(url_for("student_dashboard"))
+        existing = QuizAssignment.query.filter_by(quiz_id=exam.id, student_email=email).first()
+        if existing is None:
+            db.session.add(QuizAssignment(quiz_id=exam.id, student_email=email, assigned_by=None))
+            db.session.commit()
+            flash(f"Đã mở quyền truy cập bài thi '{exam.title}'.", "success")
+        else:
+            flash(f"Bạn đã có trong danh sách bài thi '{exam.title}'.", "info")
+        return redirect(url_for("student_dashboard"))
+
+    @app.route("/exam/<int:exam_id>", methods=["GET", "POST"])
+    @login_required("student")
+    def take_exam_alias(exam_id):
+        return take_exam(exam_id)
 
     @app.route("/student/exams/<int:exam_id>", methods=["GET", "POST"])
     @login_required("student")
     def take_exam(exam_id):
         exam = db.get_or_404(Exam, exam_id)
+        if (exam.visibility or "private") == "private" and not is_student_assigned(g.user, exam):
+            abort(403)
         if not exam.published:
             abort(404)
+        if not can_access_quiz(g.user, exam):
+            abort(403)
         attempts = _attempts(exam, g.user.id)
         _finish_expired(app, attempts)
         sub = next((a for a in attempts if a.status == "in_progress"), None)
@@ -761,6 +1115,8 @@ def register_routes(app):
     @login_required("student")
     def exam_attempts(exam_id):
         exam = db.get_or_404(Exam, exam_id)
+        if (exam.visibility or "private") == "private" and not is_student_assigned(g.user, exam):
+            abort(403)
         _finalize(app, exam, g.user.id)
         attempts = _attempts(exam, g.user.id)
         if not exam.published and not attempts:
@@ -775,8 +1131,12 @@ def register_routes(app):
     @login_required("student")
     def exam_start(exam_id):
         exam = db.get_or_404(Exam, exam_id)
+        if (exam.visibility or "private") == "private" and not is_student_assigned(g.user, exam):
+            abort(403)
         if not exam.published:
             abort(404)
+        if not can_access_quiz(g.user, exam):
+            abort(403)
         attempts = _attempts(exam, g.user.id)
         _finish_expired(app, attempts)
         if any(a.status == "in_progress" for a in attempts):
@@ -791,7 +1151,7 @@ def register_routes(app):
     @login_required("student")
     def attempt_select(sub_id):
         sub = db.get_or_404(Submission, sub_id)
-        if sub.student_id != g.user.id:
+        if sub.student_id != g.user.id or not can_access_quiz(g.user, sub.exam):
             abort(403)
         if sub.status != "graded" or sub.review == "cancelled" or not _select(app, sub):
             flash("This attempt cannot be selected.", "danger")
@@ -804,7 +1164,7 @@ def register_routes(app):
     def ticket_claim(ticket_id):
         ticket = db.get_or_404(RetakeTicket, ticket_id)
         exam = ticket.exam
-        if ticket.student_id != g.user.id:
+        if ticket.student_id != g.user.id or not can_access_quiz(g.user, exam):
             abort(403)
         attempts = _attempts(exam, g.user.id)
         _finish_expired(app, attempts)
@@ -843,7 +1203,7 @@ def register_routes(app):
     @login_required()
     def submission_view(sub_id):
         sub = db.get_or_404(Submission, sub_id)
-        if g.user.id not in (sub.student_id, sub.exam.teacher_id):
+        if g.user.id != sub.student_id and not is_quiz_owner(g.user, sub.exam):
             abort(403)
         _finalize(app, sub.exam, sub.student_id)
         if sub.status == "in_progress" and g.user.id == sub.student_id:
@@ -858,20 +1218,20 @@ def register_routes(app):
         details = {d["question_id"]: d for d in (sub.details or [])}
         return render_template("submission.html", sub=sub, exam=sub.exam, questions=sub.version.questions,
                                revoke_reasons=REVOKE_REASONS,
-                               details=details, cert_url=cert_url, is_teacher=g.user.id == sub.exam.teacher_id,
+                               details=details, cert_url=cert_url, is_teacher=is_quiz_owner(g.user, sub.exam),
                                stuck=_is_stuck(sub))
 
     @app.route("/submissions/<int:sub_id>/status")
     @login_required()
     def submission_status(sub_id):
         sub = db.get_or_404(Submission, sub_id)
-        if g.user.id not in (sub.student_id, sub.exam.teacher_id):
+        if g.user.id != sub.student_id and not is_quiz_owner(g.user, sub.exam):
             abort(403)
         return jsonify(status=sub.status, stuck=_is_stuck(sub))
 
     def _own_attempt(sub_id):
         sub = db.get_or_404(Submission, sub_id)
-        if sub.student_id != g.user.id:
+        if sub.student_id != g.user.id or not can_access_quiz(g.user, sub.exam):
             abort(403)
         _finish_if_expired(app, sub)
         return sub
@@ -922,17 +1282,14 @@ def register_routes(app):
     @login_required()
     def exam_pubsub_token(exam_id):
         exam = db.get_or_404(Exam, exam_id)
-        if g.user.role == "teacher":
-            if exam.teacher_id != g.user.id:
-                abort(403)
-        elif not exam.published:
+        if not can_access_quiz(g.user, exam):
             abort(403)
         return jsonify(pubsub_client.get_client_access_url(exam.id, user_id=g.user.id))
 
     # ---------- Teacher: managed-mode controls ----------
     def _teacher_attempt(sub_id):
         sub = db.get_or_404(Submission, sub_id)
-        if sub.exam.teacher_id != g.user.id:
+        if not is_quiz_owner(g.user, sub.exam):
             abort(403)
         return sub
 
@@ -941,67 +1298,8 @@ def register_routes(app):
     def exam_live(exam_id):
         exam = _own_exam(exam_id)
         _finalize_exam(app, exam)
-        now = utcnow()
-        version_no = {v.id: i + 1 for i, v in enumerate(exam.versions)}
         tickets = {t.student_id: t for t in exam.tickets if t.is_open}
-        subs = sorted(exam.submissions, key=lambda s: (s.student.name, s.attempt_no))
-
-        attempts = []
-        submissions_data = []
-        initial_fn = app.jinja_env.filters["initial"]
-        for idx, s in enumerate(subs):
-            total_q = len(s.version.question_ids) if s.version else 0
-            answered_q = _answered_count(s)
-            seen_ago = int((now - s.last_seen_at).total_seconds()) if s.last_seen_at else None
-            remaining = max(0, int((s.deadline - now).total_seconds())) if s.status == "in_progress" else 0
-            last_dt = (s.last_seen_at or s.started_at) if s.status == "in_progress" else (s.submitted_at or s.started_at)
-            updated_display = last_dt.strftime("%H:%M:%S") if s.status == "in_progress" else last_dt.strftime("%b %d, %Y %H:%M")
-            is_last = (idx == len(subs) - 1) or (subs[idx + 1].student_id != s.student_id)
-
-            if s.status == "in_progress":
-                attempts.append({
-                    "id": s.id,
-                    "attempt_no": s.attempt_no,
-                    "name": s.student.name,
-                    "email": s.student.email,
-                    "version": version_no.get(s.version_id),
-                    "managed": s.version.settings["managed"],
-                    "violations": s.violations,
-                    "locked": s.locked_at is not None,
-                    "lock_reason": s.lock_reason,
-                    "seen_ago": seen_ago,
-                    "remaining": remaining,
-                    "answered_count": answered_q,
-                    "total_questions": total_q,
-                    "updated_at": updated_display,
-                })
-
-            submissions_data.append({
-                "id": s.id,
-                "student_id": s.student_id,
-                "name": s.student.name,
-                "initial": initial_fn(s.student.name),
-                "email": s.student.email,
-                "attempt_no": s.attempt_no,
-                "selected": s.selected,
-                "status": s.status,
-                "score": s.score,
-                "max_score": s.max_score,
-                "percent": s.percent,
-                "passed": s.passed,
-                "violations": s.violations,
-                "managed": s.version.settings["managed"],
-                "review": s.review,
-                "answered_count": answered_q,
-                "total_questions": total_q,
-                "submitted_at": s.submitted_at.strftime("%b %d, %Y %H:%M") if s.submitted_at else "",
-                "updated_at": updated_display,
-                "details_url": url_for("submission_view", sub_id=s.id),
-                "retake_url": url_for("ticket_grant", exam_id=exam.id, student_id=s.student_id),
-                "has_ticket": s.student_id in tickets,
-                "is_last_for_student": is_last,
-            })
-
+        attempts, submissions_data = _build_monitoring_rows(exam, tickets)
         sub_ids = [s.id for s in exam.submissions]
         events = (AttemptEvent.query.filter(AttemptEvent.submission_id.in_(sub_ids))
                   .order_by(AttemptEvent.id.desc()).limit(30).all()) if sub_ids else []
