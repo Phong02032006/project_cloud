@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}{{ exam.title }}{% endblock %}
 {% block content %}
-<div class="qc-exam-bar qc-card px-4 py-3 mb-4 d-flex flex-wrap align-items-center gap-3">
+<div class="qc-exam-bar qc-card px-4 py-3 mb-3 d-flex flex-wrap align-items-center gap-3">
   <div class="flex-grow-1">
     <div class="fw-bold">{{ exam.title }}</div>
     <div class="d-flex align-items-center gap-2 mt-1">
@@ -9,7 +9,29 @@
       <span class="small text-secondary"><span id="answered">0</span>/{{ questions|length }} answered</span>
     </div>
   </div>
+  <span class="qc-chip danger" id="exam-bar-violations" {{ '' if sub.violations else 'hidden' }}>
+    Tab switches: <b id="exam-bar-violation-count">{{ sub.violations or 0 }}</b>
+  </span>
   <span class="qc-timer" id="timer-box"><i class="bi bi-stopwatch"></i> <span id="timer"></span></span>
+</div>
+
+<div class="qc-tab-alert mb-4" id="tab-warning-box" {{ '' if sub.violations else 'hidden' }}>
+  <div class="d-flex align-items-start gap-3">
+    <i class="bi bi-exclamation-triangle-fill text-danger mt-1"></i>
+    <div class="flex-grow-1">
+      <div class="d-flex flex-wrap align-items-center justify-content-between gap-2">
+        <div class="fw-semibold" id="tab-warning-title">Warning: Tab or window switch recorded</div>
+        <span class="qc-chip danger">Tab switches in this session: <b id="tab-warning-count">{{ sub.violations or 0 }}</b></span>
+      </div>
+      <div class="small text-secondary mt-1" id="tab-warning-detail">
+        Leaving the exam tab or switching windows is logged and reported to your teacher in real time.
+        {% if policy.managed and policy.autosubmit_after %}
+          The exam will be submitted automatically after {{ policy.autosubmit_after|plural("violation") }}.
+        {% endif %}
+      </div>
+    </div>
+    <button type="button" class="btn-close" id="tab-warning-close" aria-label="Close"></button>
+  </div>
 </div>
 
 {% if policy.managed %}
@@ -17,7 +39,7 @@
   <div class="qc-card p-5 text-center" style="max-width:520px">
     <i class="bi bi-shield-lock fs-1 text-primary"></i>
     <h3 class="mt-2">Managed exam</h3>
-    <p class="text-secondary">Your activity is monitored. Leaving {{ 'fullscreen, ' if policy.fullscreen }}switching away for more than 5 seconds or reopening this page counts as a violation{{ ' and needs your teacher\'s approval to continue' if policy.reentry_approval }}.</p>
+    <p class="text-secondary">Your activity is monitored. Leaving {{ 'fullscreen, ' if policy.fullscreen }}switching away or reopening this page counts as a violation{{ ' and needs your teacher\'s approval to continue' if policy.reentry_approval }}.</p>
     {% if policy.autosubmit_after %}<p class="small text-danger">The exam is submitted automatically after {{ policy.autosubmit_after|plural("violation") }}.</p>{% endif %}
     <button class="btn btn-primary btn-lg" id="mm-start-btn"><i class="bi bi-play-fill"></i> {{ 'Enter fullscreen and start' if policy.fullscreen else 'Start' }}</button>
   </div>
@@ -49,6 +71,7 @@
   <div class="row g-4">
     <div class="col-lg-9">
       {% for q in questions %}
+        {% set saved_choices = (sub.answers or {}).get(q.id|string, []) %}
         <div class="qc-card p-4 mb-3" id="card-{{ q.id }}" style="scroll-margin-top:160px">
           <div class="d-flex gap-3 mb-3">
             <div class="qc-q-num">{{ loop.index }}</div>
@@ -64,7 +87,7 @@
           </div>
           {% for opt in q.options %}
             <label class="qc-choice" for="q{{ q.id }}_{{ loop.index0 }}">
-              <input type="{{ 'checkbox' if q.is_multi else 'radio' }}" name="q{{ q.id }}" value="{{ loop.index0 }}" id="q{{ q.id }}_{{ loop.index0 }}" data-q="{{ q.id }}">
+              <input type="{{ 'checkbox' if q.is_multi else 'radio' }}" name="q{{ q.id }}" value="{{ loop.index0 }}" id="q{{ q.id }}_{{ loop.index0 }}" data-q="{{ q.id }}" {{ 'checked' if loop.index0 in saved_choices }}>
               <span class="letter">{{ letters[loop.index0] }}</span>
               <span>{{ opt }}</span>
             </label>
@@ -87,98 +110,201 @@
 {% endblock %}
 {% block scripts %}
 <script>
-  const total = {{ questions|length }};
-  const updateProgress = () => {
-    const answered = new Set([...document.querySelectorAll("#exam-form input[data-q]:checked")].map(i => i.dataset.q));
-    document.querySelectorAll(".qc-nav-grid a").forEach(a => a.classList.toggle("done", answered.has(a.id.slice(4))));
-    document.getElementById("answered").textContent = answered.size;
-    document.getElementById("progress-bar").style.width = (total ? 100 * answered.size / total : 0) + "%";
-  };
-  document.getElementById("exam-form").addEventListener("change", updateProgress);
-
-  // Countdown from the server-side deadline; auto-submits when time runs out.
-  let remaining = {{ remaining }};
-  const el = document.getElementById("timer"), box = document.getElementById("timer-box");
-  const tick = () => {
-    const m = String(Math.floor(remaining / 60)).padStart(2, "0"), s = String(remaining % 60).padStart(2, "0");
-    el.textContent = `${m}:${s}`;
-    box.classList.toggle("low", remaining <= 60);
-    if (remaining-- <= 0) { clearInterval(t); window.qcSubmitting = true; document.getElementById("exam-form").submit(); }
-  };
-  const t = setInterval(tick, 1000); tick();
-  document.getElementById("exam-form").addEventListener("submit", () => { window.qcSubmitting = true; });
-</script>
-{% if policy.managed %}
-<script>
   (() => {
-    const P = {{ policy|tojson }}, csrf = document.querySelector("#exam-form input[name=csrf]").value;
-    const urls = {beat: "{{ url_for('attempt_heartbeat', sub_id=sub.id) }}", event: "{{ url_for('attempt_event', sub_id=sub.id) }}"};
-    const show = id => ["mm-start", "mm-locked", "mm-resume"].forEach(o => document.getElementById(o).hidden = o !== id);
-    let started = false, locked = {{ 'true' if sub.locked_at else 'false' }};
-
-    const apply = st => {
-      if (st.status !== "in_progress") { window.qcSubmitting = true; location.href = st.redirect; return; }
-      locked = st.locked;
-      if (locked) show("mm-locked");
-      else if (!started) show("mm-start");
-      else if (P.fullscreen && !document.fullscreenElement) show("mm-resume");
-      else show(null);
+    const total = {{ questions|length }};
+    const P = {{ policy|tojson }};
+    const isManaged = Boolean(P.managed);
+    const examForm = document.getElementById("exam-form");
+    const csrf = examForm.querySelector("input[name=csrf]").value;
+    const urls = {
+      progress: "{{ url_for('attempt_progress', sub_id=sub.id) }}",
+      beat: "{{ url_for('attempt_heartbeat', sub_id=sub.id) }}",
+      event: "{{ url_for('attempt_event', sub_id=sub.id) }}"
     };
-    const post = (url, data = {}) => {
+
+    let started = !isManaged;
+    let locked = {{ 'true' if sub.locked_at else 'false' }};
+    let violations = {{ sub.violations or 0 }};
+
+    const showOverlay = id => {
+      if (!isManaged) return;
+      ["mm-start", "mm-locked", "mm-resume"].forEach(o => {
+        const el = document.getElementById(o);
+        if (el) el.hidden = o !== id;
+      });
+    };
+
+    const updateViolationUI = (count, detailText) => {
+      violations = count;
+      document.getElementById("tab-warning-count").textContent = count;
+      document.getElementById("exam-bar-violation-count").textContent = count;
+      document.getElementById("exam-bar-violations").hidden = count <= 0;
+      if (detailText) {
+        document.getElementById("tab-warning-detail").textContent = detailText;
+      }
+      if (count > 0) {
+        document.getElementById("tab-warning-box").hidden = false;
+      }
+    };
+
+    document.getElementById("tab-warning-close").addEventListener("click", () => {
+      document.getElementById("tab-warning-box").hidden = true;
+    });
+
+    const applyState = st => {
+      if (!st) return;
+      if (typeof st.violations === "number" && st.violations > violations) {
+        updateViolationUI(st.violations);
+      } else if (typeof st.violations === "number") {
+        violations = st.violations;
+        document.getElementById("tab-warning-count").textContent = violations;
+        document.getElementById("exam-bar-violation-count").textContent = violations;
+        document.getElementById("exam-bar-violations").hidden = violations <= 0;
+      }
+      if (st.status && st.status !== "in_progress") {
+        window.qcSubmitting = true;
+        if (st.redirect) location.href = st.redirect;
+        return;
+      }
+      if (isManaged) {
+        locked = Boolean(st.locked);
+        if (locked) showOverlay("mm-locked");
+        else if (!started) showOverlay("mm-start");
+        else if (P.fullscreen && !document.fullscreenElement) showOverlay("mm-resume");
+        else showOverlay(null);
+      }
+    };
+
+    const postAction = (url, data = {}) => {
       const body = new FormData();
       body.append("csrf", csrf);
       Object.entries(data).forEach(([k, v]) => body.append(k, v));
-      return fetch(url, {method: "POST", body}).then(r => r.ok ? r.json() : null).then(st => st && apply(st)).catch(() => {});
+      return fetch(url, {method: "POST", body})
+        .then(r => r.ok ? r.json() : null)
+        .then(st => { if (st) applyState(st); return st; })
+        .catch(() => null);
     };
-    const report = (type, detail = "") => { if (!window.qcSubmitting) post(urls.event, {type, detail}); };
 
-    const enter = () => {
-      const go = () => { started = true; apply({status: "in_progress", locked}); };
-      if (P.fullscreen) document.documentElement.requestFullscreen().then(go).catch(go);
-      else go();
+    const reportEvent = (type, detail = "") => {
+      if (!window.qcSubmitting) return postAction(urls.event, {type, detail});
+      return Promise.resolve(null);
     };
-    document.getElementById("mm-start-btn").addEventListener("click", enter);
-    document.getElementById("mm-resume-btn").addEventListener("click", enter);
 
-    document.addEventListener("fullscreenchange", () => {
-      if (P.fullscreen && started && !document.fullscreenElement && !window.qcSubmitting) {
-        report("fullscreen_exit");
-        if (!locked) show("mm-resume");
+    let progressTimer = null;
+    const syncProgressToServer = () => {
+      if (window.qcSubmitting) return;
+      const body = new FormData(examForm);
+      fetch(urls.progress, {method: "POST", body})
+        .then(r => r.ok ? r.json() : null)
+        .then(st => st && applyState(st))
+        .catch(() => {});
+    };
+
+    const updateProgress = (sync = false) => {
+      const answered = new Set([...document.querySelectorAll("#exam-form input[data-q]:checked")].map(i => i.dataset.q));
+      document.querySelectorAll(".qc-nav-grid a").forEach(a => a.classList.toggle("done", answered.has(a.id.slice(4))));
+      document.getElementById("answered").textContent = answered.size;
+      document.getElementById("progress-bar").style.width = (total ? 100 * answered.size / total : 0) + "%";
+      if (sync) {
+        if (progressTimer) clearTimeout(progressTimer);
+        progressTimer = setTimeout(syncProgressToServer, 200);
+      }
+    };
+    examForm.addEventListener("change", () => updateProgress(true));
+    updateProgress(false);
+
+    // Countdown from the server-side deadline; auto-submits when time runs out.
+    let remaining = {{ remaining }};
+    const timerEl = document.getElementById("timer"), timerBox = document.getElementById("timer-box");
+    const tick = () => {
+      const m = String(Math.floor(remaining / 60)).padStart(2, "0"), s = String(remaining % 60).padStart(2, "0");
+      timerEl.textContent = `${m}:${s}`;
+      timerBox.classList.toggle("low", remaining <= 60);
+      if (remaining-- <= 0) {
+        clearInterval(t);
+        window.qcSubmitting = true;
+        examForm.submit();
+      }
+    };
+    const t = setInterval(tick, 1000);
+    tick();
+    examForm.addEventListener("submit", () => { window.qcSubmitting = true; });
+
+    // Tab leave / window blur detection (active for all exams)
+    let awayAt = null, blurTimer = null;
+    const triggerTabLeave = (reason) => {
+      if (window.qcSubmitting || !started || locked || awayAt !== null) return;
+      awayAt = Date.now();
+      const timeStr = new Date().toLocaleTimeString([], {hour: "2-digit", minute: "2-digit", second: "2-digit"});
+      const nextCount = violations + 1;
+      const limitNote = (isManaged && P.autosubmit_after)
+        ? ` The exam will auto-submit at ${P.autosubmit_after} violations.`
+        : "";
+      updateViolationUI(
+        nextCount,
+        `You left the exam screen (${reason}) at ${timeStr}. This event has been logged and sent to your teacher.${limitNote}`
+      );
+      reportEvent("tab_switch", `${reason} at ${timeStr}`);
+    };
+
+    const handleReturn = () => {
+      if (blurTimer) { clearTimeout(blurTimer); blurTimer = null; }
+      if (awayAt !== null && !document.hidden) {
+        awayAt = null;
+      }
+    };
+
+    document.addEventListener("visibilitychange", () => {
+      if (document.hidden) {
+        if (blurTimer) { clearTimeout(blurTimer); blurTimer = null; }
+        triggerTabLeave("switched browser tab");
+      } else {
+        handleReturn();
       }
     });
 
-    // Focus loss only counts when it lasts more than 5 seconds.
-    let awayAt = null, awayTimer = null, awayReported = false;
-    const away = () => {
-      if (awayAt || !started) return;
-      awayAt = Date.now(); awayReported = false;
-      awayTimer = setTimeout(() => { awayReported = true; report("focus_lost", "more than 5s"); }, 5000);
-    };
-    const back = () => {
-      if (!awayAt) return;
-      clearTimeout(awayTimer);
-      const secs = Math.round((Date.now() - awayAt) / 1000);
-      if (!awayReported && secs >= 5) report("focus_lost", `${secs}s`);
-      awayAt = null;
-    };
-    window.addEventListener("blur", away);
-    window.addEventListener("focus", back);
-    document.addEventListener("visibilitychange", () => document.hidden ? away() : back());
+    window.addEventListener("blur", () => {
+      if (window.qcSubmitting || !started || locked || awayAt !== null) return;
+      if (blurTimer) clearTimeout(blurTimer);
+      blurTimer = setTimeout(() => {
+        if (document.hidden || !document.hasFocus()) {
+          triggerTabLeave(document.hidden ? "switched browser tab" : "window lost focus");
+        }
+      }, 150);
+    });
 
-    let lastBlocked = 0;
-    const block = (allowed, type) => e => {
-      if (allowed) return;
-      e.preventDefault();
-      if (Date.now() - lastBlocked > 2000) { lastBlocked = Date.now(); report(type); }
-    };
-    document.addEventListener("copy", block(P.allow_copy, "copy"));
-    document.addEventListener("cut", block(P.allow_copy, "copy"));
-    document.addEventListener("paste", block(P.allow_paste, "paste"));
-    document.addEventListener("contextmenu", block(P.allow_context_menu, "context_menu"));
+    window.addEventListener("focus", handleReturn);
 
-    setInterval(() => post(urls.beat), 5000);
-    apply({status: "in_progress", locked});
+    if (isManaged) {
+      const enter = () => {
+        const go = () => { started = true; applyState({status: "in_progress", locked, violations}); };
+        if (P.fullscreen) document.documentElement.requestFullscreen().then(go).catch(go);
+        else go();
+      };
+      document.getElementById("mm-start-btn").addEventListener("click", enter);
+      document.getElementById("mm-resume-btn").addEventListener("click", enter);
+
+      document.addEventListener("fullscreenchange", () => {
+        if (P.fullscreen && started && !document.fullscreenElement && !window.qcSubmitting) {
+          reportEvent("fullscreen_exit");
+          if (!locked) showOverlay("mm-resume");
+        }
+      });
+
+      let lastBlocked = 0;
+      const block = (allowed, type) => e => {
+        if (allowed) return;
+        e.preventDefault();
+        if (Date.now() - lastBlocked > 2000) { lastBlocked = Date.now(); reportEvent(type); }
+      };
+      document.addEventListener("copy", block(P.allow_copy, "copy"));
+      document.addEventListener("cut", block(P.allow_copy, "copy"));
+      document.addEventListener("paste", block(P.allow_paste, "paste"));
+      document.addEventListener("contextmenu", block(P.allow_context_menu, "context_menu"));
+
+      setInterval(() => postAction(urls.beat), 5000);
+      applyState({status: "in_progress", locked, violations});
+    }
   })();
 </script>
-{% endif %}
 {% endblock %}

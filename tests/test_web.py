@@ -894,3 +894,72 @@ def test_revoke_certificate(app, monkeypatch):
     student.post("/student/tickets/1/claim", data={"csrf": csrf(student, "/student")})
     with app.app_context():
         assert Certificate.query.one().status == "revoked"
+
+
+def test_pubsub_progress_and_tab_switch_flow(app, monkeypatch):
+    import pubsub_client
+
+    published_events = []
+    real_publish = pubsub_client.publish_exam_event
+    monkeypatch.setattr(
+        pubsub_client,
+        "publish_exam_event",
+        lambda exam_id, event_type, data=None: published_events.append((exam_id, event_type, data))
+        or real_publish(exam_id, event_type, data),
+    )
+
+    teacher, student, _, exam_id = _setup(app)
+
+    # Local fallback mode when AZURE_WEBPUBSUB_CONNECTION_STRING is unset
+    token_resp = teacher.get(f"/api/exams/{exam_id}/pubsub-token")
+    assert token_resp.status_code == 200
+    token_data = token_resp.get_json()
+    assert token_data["enabled"] is False and token_data["group"] == f"exam_{exam_id}"
+
+    # Another teacher cannot request token for this exam
+    other_teacher = app.test_client()
+    login(other_teacher, "Other", "other@x.edu", "teacher")
+    assert other_teacher.get(f"/api/exams/{exam_id}/pubsub-token").status_code == 403
+
+    # Configured mode returns a valid wss:// client access URL for the exam group
+    app.config["AZURE_WEBPUBSUB_CONNECTION_STRING"] = (
+        "Endpoint=https://demo.webpubsub.azure.com;AccessKey=0123456789abcdef0123456789abcdef;Version=1.0;"
+    )
+    app.config["AZURE_WEBPUBSUB_HUB"] = "quizcloud"
+    token_cfg = teacher.get(f"/api/exams/{exam_id}/pubsub-token").get_json()
+    assert token_cfg["enabled"] is True
+    assert token_cfg["url"].startswith("wss://demo.webpubsub.azure.com/client/hubs/quizcloud?access_token=")
+    app.config["AZURE_WEBPUBSUB_CONNECTION_STRING"] = ""
+
+    # 1. Student starts exam -> attempt_started event published
+    s = csrf(student, f"/student/exams/{exam_id}")
+    assert any(ev[1] == "attempt_started" for ev in published_events)
+
+    # 2. Student updates progress -> progress_updated event published and draft answers saved
+    prog = student.post("/submissions/1/progress", data={"csrf": s, "q1": "0"}).get_json()
+    assert prog["answered_count"] == 1 and prog["total_questions"] == 2
+    assert published_events[-1][1] == "progress_updated"
+    assert published_events[-1][2]["answered_count"] == 1
+
+    # 3. Student switches tab -> tab_violation event published and violation stored in DB even on standard exam
+    ev_resp = student.post("/submissions/1/events", data={"csrf": s, "type": "tab_switch", "detail": "switched browser tab"}).get_json()
+    assert ev_resp["violations"] == 1
+    assert published_events[-1][1] == "tab_violation"
+    assert published_events[-1][2]["violations"] == 1
+    assert _sub(app)["violations"] == 1 and _sub(app)["events"] == [("tab_switch", True)]
+
+    # Live endpoint returns active attempt progress, events, and full submissions table snapshot
+    live = teacher.get(f"/teacher/exams/{exam_id}/live.json").get_json()
+    assert live["attempts"][0]["answered_count"] == 1 and live["attempts"][0]["violations"] == 1
+    assert live["submissions"][0]["status"] == "in_progress" and live["submissions"][0]["answered_count"] == 1
+    assert live["events"][0]["type"] == "tab_switch"
+
+    # 4. Student submits exam -> attempt_submitted event published with final score
+    student.post(f"/student/exams/{exam_id}", data={"csrf": s, "q1": "0", "q2": "1"})
+    assert published_events[-1][1] == "attempt_submitted"
+    assert published_events[-1][2]["status"] == "graded" and published_events[-1][2]["score"] == 2.0
+    live_after = teacher.get(f"/teacher/exams/{exam_id}/live.json").get_json()
+    assert live_after["attempts"] == []
+    assert live_after["submissions"][0]["status"] == "graded" and live_after["submissions"][0]["score"] == 2.0
+    assert live_after["stats"]["count"] == 1
+

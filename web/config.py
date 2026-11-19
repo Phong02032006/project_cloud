@@ -44,3 +44,7 @@ class Config:
     AZURE_OPENAI_API_KEY = os.environ.get("AZURE_OPENAI_API_KEY", "")
     AZURE_OPENAI_DEPLOYMENT = os.environ.get("AZURE_OPENAI_DEPLOYMENT", "gpt-4.1-mini")
     AZURE_OPENAI_API_VERSION = os.environ.get("AZURE_OPENAI_API_VERSION", "2024-10-21")
+
+    # Optional: Azure Web PubSub for real-time exam monitoring and tab-leave alerts.
+    AZURE_WEBPUBSUB_CONNECTION_STRING = os.environ.get("AZURE_WEBPUBSUB_CONNECTION_STRING", "")
+    AZURE_WEBPUBSUB_HUB = os.environ.get("AZURE_WEBPUBSUB_HUB", "quizcloud")

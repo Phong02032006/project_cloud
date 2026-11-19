@@ -8,3 +8,4 @@ gunicorn==23.0.0
 pymssql==2.3.2
 azure-storage-blob
 openai
+azure-messaging-webpubsubservice

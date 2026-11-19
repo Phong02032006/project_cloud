@@ -775,6 +775,26 @@ h3 { font-size: 1.45rem; }
   box-shadow: var(--apple-shadow-sm);
 }
 
+/* ---------- Proctoring & Real-Time Monitoring ---------- */
+.qc-tab-alert {
+  background: #fff9f8;
+  border: 1px solid #f1d3cf;
+  border-left: 4px solid #c93b2b;
+  border-radius: var(--apple-radius-md);
+  padding: 0.9rem 1.1rem;
+  color: var(--apple-ink);
+}
+
+.qc-live-notice {
+  background: #fffaf2;
+  border: 1px solid #edd8b8;
+  border-left: 3px solid #b25e00;
+  border-radius: var(--apple-radius-sm);
+  padding: 0.6rem 0.85rem;
+  font-size: 0.85rem;
+  color: var(--apple-ink);
+}
+
 @media (max-width: 576px) {
   .qc-stat { flex-direction: column; align-items: flex-start; gap: 0.5rem; padding: 1rem; }
   .qc-hero { padding: 3rem 1.5rem; }
