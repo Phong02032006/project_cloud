@@ -27,18 +27,23 @@ LETTERS = "ABCDEFGH"
 
 
 def _ensure_schema(app):
-    """Safely add questions.image_url on existing SQLite or Azure SQL databases without losing data."""
+    """Safely add new columns on existing SQLite or Azure SQL databases without losing data."""
+    migrations = (
+        ("questions", "image_url", "VARCHAR(500) NULL"),
+        ("users", "password_hash", "VARCHAR(255) NULL"),
+    )
     with app.app_context():
         try:
             inspector = inspect(db.engine)
-            if inspector.has_table("questions"):
-                cols = {c["name"] for c in inspector.get_columns("questions")}
-                if "image_url" not in cols:
-                    db.session.execute(text("ALTER TABLE questions ADD image_url VARCHAR(500) NULL"))
-                    db.session.commit()
+            for table, col, col_type in migrations:
+                if inspector.has_table(table):
+                    cols = {c["name"] for c in inspector.get_columns(table)}
+                    if col not in cols:
+                        db.session.execute(text(f"ALTER TABLE {table} ADD {col} {col_type}"))
+                        db.session.commit()
         except Exception:
             db.session.rollback()
-            app.logger.warning("Auto-migration for questions.image_url skipped", exc_info=True)
+            app.logger.warning("Auto-migration skipped", exc_info=True)
 
 
 def create_app(overrides=None):
