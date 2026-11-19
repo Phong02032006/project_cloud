@@ -12,6 +12,12 @@
       <span class="qc-chip"><i class="bi bi-star"></i> {{ exam.max_score|num }} points</span>
       <span class="qc-chip"><i class="bi bi-clock"></i> {{ exam.duration_minutes }} min</span>
       <span class="qc-chip"><i class="bi bi-trophy"></i> Pass at {{ exam.pass_percent|num }}%</span>
+      {% if (exam.visibility or 'private') == 'private' %}
+        <span class="qc-chip warning"><i class="bi bi-lock-fill"></i> Riêng tư · {{ exam.assignments|length }} học sinh</span>
+        {% if exam.access_code %}<span class="qc-chip"><i class="bi bi-key"></i> Mã: <b>{{ exam.access_code }}</b></span>{% endif %}
+      {% else %}
+        <span class="qc-chip info"><i class="bi bi-globe2"></i> Công khai</span>
+      {% endif %}
       {% if exam.max_attempts > 1 %}<span class="qc-chip"><i class="bi bi-arrow-repeat"></i> {{ exam.max_attempts }} attempts · choose by {{ exam.selection_deadline.strftime('%b %d %H:%M') }} UTC</span>{% endif %}
       {% if exam.settings.managed %}<span class="qc-chip info"><i class="bi bi-shield-lock"></i> Managed</span>{% endif %}
     </div>
@@ -40,6 +46,120 @@
     Only attempts started after the edit get the change.</div>
 </div>
 {% endif %}
+
+<div class="qc-card p-4 mb-4" id="assignments-card">
+  <div class="d-flex flex-wrap align-items-center justify-content-between gap-3 pb-3 border-bottom">
+    <div>
+      <h5 class="mb-1"><i class="bi bi-people text-primary"></i> Phân quyền &amp; Quản lý thí sinh</h5>
+      <div class="small text-secondary">
+        {% if (exam.visibility or 'private') == 'private' %}
+          Chỉ học sinh có email trong danh sách dưới đây hoặc nhập đúng mã tham gia mới được phép truy cập và làm bài.
+        {% else %}
+          Đề thi đang ở chế độ <b>Công khai</b>. Tất cả tài khoản học sinh trong hệ thống đều có thể nhìn thấy và làm bài.
+        {% endif %}
+      </div>
+    </div>
+    <div class="d-flex flex-wrap align-items-center gap-2">
+      <form method="post" action="{{ url_for('exam_visibility', exam_id=exam.id) }}" class="d-flex align-items-center gap-2 m-0">
+        <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+        <select name="visibility" class="form-select form-select-sm" style="width:auto" onchange="this.form.submit()">
+          <option value="private" {{ 'selected' if (exam.visibility or 'private') == 'private' }}>Riêng tư (Chỉ học sinh được thêm)</option>
+          <option value="public" {{ 'selected' if exam.visibility == 'public' }}>Công khai (Tất cả học sinh)</option>
+        </select>
+        <noscript><button class="btn btn-sm btn-soft">Lưu</button></noscript>
+      </form>
+      {% if (exam.visibility or 'private') == 'private' and exam.access_code %}
+        <div class="d-flex align-items-center gap-1 ps-2 border-start">
+          <span class="small text-secondary">Mã bài thi:</span>
+          <code class="fw-bold fs-6 px-2 py-1 rounded bg-light text-dark border" id="exam-access-code">{{ exam.access_code }}</code>
+          <button type="button" class="btn btn-sm btn-ghost" id="copy-access-code-btn" data-code="{{ exam.access_code }}">
+            <i class="bi bi-clipboard"></i> <span id="copy-access-code-label">Sao chép</span>
+          </button>
+          <form method="post" action="{{ url_for('exam_access_code_regenerate', exam_id=exam.id) }}" class="m-0 d-inline">
+            <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+            <button class="btn btn-sm btn-ghost" title="Đổi mã tham gia mới"><i class="bi bi-arrow-repeat"></i></button>
+          </form>
+        </div>
+      {% endif %}
+    </div>
+  </div>
+
+  {% if (exam.visibility or 'private') == 'private' %}
+  <div class="row g-4 pt-3">
+    <div class="col-lg-5">
+      <form method="post" action="{{ url_for('exam_assignments_add', exam_id=exam.id) }}">
+        <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+        <div class="fw-semibold small mb-2">1. Chọn nhanh học sinh đã có tài khoản</div>
+        <input type="text" id="student-filter-input" class="form-control form-control-sm mb-2" placeholder="Lọc nhanh theo tên hoặc email...">
+        <div class="border rounded p-2 mb-3" style="max-height:175px;overflow-y:auto;background:#fbfbfd">
+          {% for u in student_users %}
+            {% set em = (u.email or '')|lower %}
+            {% if em %}
+              {% set already = em in assigned_emails %}
+              <label class="d-flex align-items-center gap-2 py-1 px-2 rounded small js-student-row" data-search="{{ (u.name ~ ' ' ~ em)|lower }}" style="cursor:pointer">
+                <input class="form-check-input m-0" type="checkbox" name="student_emails" value="{{ em }}" {{ 'checked disabled' if already }}>
+                <span class="fw-medium text-truncate">{{ u.name }}</span>
+                <span class="text-secondary text-truncate ms-auto">{{ em }}</span>
+                {% if already %}<span class="qc-chip success py-0 px-2">Đã thêm</span>{% endif %}
+              </label>
+            {% endif %}
+          {% else %}
+            <div class="small text-secondary p-2 text-center">Chưa có tài khoản học sinh nào trong hệ thống.</div>
+          {% endfor %}
+        </div>
+
+        <div class="fw-semibold small mb-1">2. Nhập hoặc dán nhiều email cùng lúc</div>
+        <div class="form-text mt-0 mb-2">Phân tách bằng dấu phẩy (<code>,</code>), chấm phẩy (<code>;</code>) hoặc xuống dòng. Hỗ trợ thêm trước email Microsoft / Entra ID khi học sinh chưa đăng nhập lần đầu.</div>
+        <textarea name="bulk_emails" class="form-control form-control-sm mb-3" rows="3" placeholder="student1@school.edu, student2@school.edu&#10;student3@outlook.com"></textarea>
+        <button type="submit" class="btn btn-primary btn-sm w-100"><i class="bi bi-person-plus"></i> Thêm học sinh vào đề thi</button>
+      </form>
+    </div>
+
+    <div class="col-lg-7">
+      <div class="d-flex align-items-center justify-content-between mb-2">
+        <span class="fw-semibold small">Danh sách thí sinh được giao ({{ assigned_list|length }})</span>
+      </div>
+      <div class="table-responsive border rounded" style="max-height:360px;overflow-y:auto">
+        <table class="table qc-table table-sm m-0">
+          <thead style="position:sticky;top:0;z-index:1">
+            <tr>
+              <th>Email</th>
+              <th>Họ tên</th>
+              <th>Trạng thái</th>
+              <th class="text-end">Thao tác</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for item in assigned_list %}
+              <tr>
+                <td class="fw-medium small">{{ item.email }}</td>
+                <td class="small">{{ item.name or '—' }}</td>
+                <td>
+                  {% if item.has_account %}
+                    <span class="qc-chip success">Đã có tài khoản</span>
+                  {% else %}
+                    <span class="qc-chip warning">Chờ đăng nhập</span>
+                  {% endif %}
+                </td>
+                <td class="text-end">
+                  <form method="post" action="{{ url_for('exam_assignment_delete', exam_id=exam.id, assignment_id=item.id) }}" class="m-0 d-inline">
+                    <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+                    <button class="btn btn-sm btn-ghost text-danger py-0 px-2">Xóa</button>
+                  </form>
+                </td>
+              </tr>
+            {% else %}
+              <tr>
+                <td colspan="4" class="text-center text-secondary small py-4">Chưa có thí sinh nào được gán cho đề thi riêng tư này.</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+  {% endif %}
+</div>
 
 <div class="row g-4">
   <div class="col-lg-7">
@@ -135,6 +255,13 @@
           <div class="col-6"><label class="form-label small">Pass mark (%)</label><input name="pass_percent" type="number" min="0" max="100" value="{{ exam.pass_percent|num }}" class="form-control"></div>
           <div class="col-6"><label class="form-label small">Attempts per student</label><input name="max_attempts" type="number" min="1" value="{{ exam.max_attempts }}" class="form-control"></div>
           <div class="col-6"><label class="form-label small">Choose-by deadline (UTC)</label><input name="selection_deadline" type="datetime-local" value="{{ exam.selection_deadline.strftime('%Y-%m-%dT%H:%M') if exam.selection_deadline else '' }}" class="form-control"></div>
+          <div class="col-12">
+            <label class="form-label small">Chế độ hiển thị (Visibility)</label>
+            <select name="visibility" class="form-select">
+              <option value="private" {{ 'selected' if (exam.visibility or 'private') == 'private' }}>Riêng tư (Chỉ học sinh được thêm)</option>
+              <option value="public" {{ 'selected' if exam.visibility == 'public' }}>Công khai (Tất cả học sinh)</option>
+            </select>
+          </div>
           <div class="col-12 form-text mt-1">With more than one attempt, students pick the attempt that counts; at the deadline the best one is picked for anyone who has not. Attempt and deadline settings apply to all students immediately, not per version.</div>
         </div>
         <div class="form-check form-switch mb-2">
@@ -198,6 +325,30 @@
       if (btn) {
         btn.disabled = true;
         btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true"></span> Generating with AI...';
+      }
+    });
+  }
+  const filterInput = document.getElementById("student-filter-input");
+  if (filterInput) {
+    filterInput.addEventListener("input", () => {
+      const q = filterInput.value.trim().toLowerCase();
+      document.querySelectorAll(".js-student-row").forEach(row => {
+        row.style.display = (!q || (row.dataset.search || "").includes(q)) ? "" : "none";
+      });
+    });
+  }
+  const copyBtn = document.getElementById("copy-access-code-btn");
+  if (copyBtn) {
+    copyBtn.addEventListener("click", () => {
+      const code = copyBtn.dataset.code || "";
+      if (navigator.clipboard && code) {
+        navigator.clipboard.writeText(code).then(() => {
+          const lbl = document.getElementById("copy-access-code-label");
+          if (lbl) {
+            lbl.textContent = "Đã chép";
+            setTimeout(() => { lbl.textContent = "Sao chép"; }, 1800);
+          }
+        });
       }
     });
   }
