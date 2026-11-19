@@ -963,3 +963,46 @@ def test_pubsub_progress_and_tab_switch_flow(app, monkeypatch):
     assert live_after["submissions"][0]["status"] == "graded" and live_after["submissions"][0]["score"] == 2.0
     assert live_after["stats"]["count"] == 1
 
+
+def test_register_and_password_login_in_entra_mode(app):
+    app.config["AUTH_MODE"] = "entra"
+    c = app.test_client()
+
+    # Login page offers both Microsoft Entra ID button and email/password + register link
+    login_html = c.get("/login").get_data(as_text=True)
+    assert "Sign in with Microsoft Entra ID" in login_html and "/auth/entra" in login_html and "/register" in login_html
+
+    # Validation: password too short / mismatch
+    token = csrf(c, "/register")
+    bad = c.post("/register", data={
+        "csrf": token, "name": "New User", "email": "new@x.edu",
+        "password": "123", "confirm_password": "123", "role": "student",
+    })
+    assert "at least 6 characters" in bad.get_data(as_text=True)
+
+    # Successful registration signs user in and redirects to student dashboard
+    ok = c.post("/register", data={
+        "csrf": token, "name": "New Student", "email": "new@x.edu",
+        "password": "secret123", "confirm_password": "secret123", "role": "student",
+    })
+    assert ok.status_code == 302 and ok.headers["Location"].endswith("/")
+    assert "New Student" in c.get("/student").get_data(as_text=True)
+
+    # Logout of a local user stays in the app (does not redirect to Microsoft logout)
+    out = c.post("/logout", data={"csrf": csrf(c, "/student")})
+    assert out.status_code == 302 and out.headers["Location"].endswith("/")
+
+    # Duplicate email registration is rejected
+    dup = c.post("/register", data={
+        "csrf": csrf(c, "/register"), "name": "Dup", "email": "new@x.edu",
+        "password": "secret123", "confirm_password": "secret123", "role": "student",
+    })
+    assert "already exists" in dup.get_data(as_text=True)
+
+    # Wrong password fails, right password succeeds
+    wrong = c.post("/login", data={"csrf": csrf(c, "/login"), "email": "new@x.edu", "password": "wrong"})
+    assert "Invalid email or password" in wrong.get_data(as_text=True)
+    right = c.post("/login", data={"csrf": csrf(c, "/login"), "email": "new@x.edu", "password": "secret123"})
+    assert right.status_code == 302 and "New Student" in c.get("/student").get_data(as_text=True)
+
+

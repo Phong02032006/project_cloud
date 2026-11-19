@@ -1,8 +1,9 @@
-"""Authentication: Microsoft Entra External ID (MSAL auth-code flow) or a local dev login."""
+"""Authentication: Microsoft Entra ID (MSAL auth-code flow), email/password accounts, or local dev login."""
 from functools import wraps
 
 import msal
 from flask import Blueprint, abort, current_app, flash, g, redirect, render_template, request, session, url_for
+from werkzeug.security import check_password_hash, generate_password_hash
 
 from models import User, db
 
@@ -35,6 +36,15 @@ def _role_from_claims(claims):
     return None
 
 
+def _finish_session(user):
+    csrf = session.get("csrf")
+    session.clear()
+    if csrf:
+        session["csrf"] = csrf
+    session["user_id"] = user.id
+    return user
+
+
 def _sign_in(external_id, name, email, role):
     user = User.query.filter_by(external_id=external_id).first()
     if user is None:
@@ -44,12 +54,7 @@ def _sign_in(external_id, name, email, role):
         # Entra is the source of truth: role changes there take effect on next login.
         user.name, user.email, user.role = name, email, role
     db.session.commit()
-    csrf = session.get("csrf")
-    session.clear()
-    if csrf:
-        session["csrf"] = csrf
-    session["user_id"] = user.id
-    return user
+    return _finish_session(user)
 
 
 @bp.before_app_request
@@ -73,12 +78,27 @@ def login_required(role=None):
     return decorator
 
 
+@bp.route("/auth/entra")
+def entra_login():
+    if current_app.config["AUTH_MODE"] != "entra":
+        return redirect(url_for("auth.login"))
+    flow = _msal_app().initiate_auth_code_flow(scopes=[], redirect_uri=url_for("auth.callback", _external=True))
+    session["auth_flow"] = flow
+    return redirect(flow["auth_uri"])
+
+
 @bp.route("/login", methods=["GET", "POST"])
 def login():
     if current_app.config["AUTH_MODE"] == "entra":
-        flow = _msal_app().initiate_auth_code_flow(scopes=[], redirect_uri=url_for("auth.callback", _external=True))
-        session["auth_flow"] = flow
-        return redirect(flow["auth_uri"])
+        if request.method == "POST":
+            email = request.form.get("email", "").strip().lower()
+            password = request.form.get("password", "")
+            user = User.query.filter_by(external_id=f"local:{email}").first() if email else None
+            if user and user.password_hash and check_password_hash(user.password_hash, password):
+                _finish_session(user)
+                return redirect(url_for("index"))
+            flash("Invalid email or password.", "danger")
+        return render_template("login.html")
 
     if request.method == "POST":
         name = request.form.get("name", "").strip()
@@ -90,6 +110,41 @@ def login():
             _sign_in(f"dev:{email}", name, email, role)
             return redirect(url_for("index"))
     return render_template("login_dev.html")
+
+
+@bp.route("/register", methods=["GET", "POST"])
+def register():
+    if request.method == "POST":
+        name = request.form.get("name", "").strip()
+        email = request.form.get("email", "").strip().lower()
+        password = request.form.get("password", "")
+        confirm = request.form.get("confirm_password", "")
+        role = request.form.get("role", "student")
+
+        if not name or not email or "@" not in email:
+            flash("Please enter a valid full name and email.", "danger")
+        elif len(password) < 6:
+            flash("Password must be at least 6 characters.", "danger")
+        elif password != confirm:
+            flash("Passwords do not match.", "danger")
+        elif role not in ROLES:
+            flash("Please choose a valid role.", "danger")
+        elif User.query.filter_by(external_id=f"local:{email}").first():
+            flash("An account with this email already exists. Please sign in.", "danger")
+        else:
+            user = User(
+                external_id=f"local:{email}",
+                name=name,
+                email=email,
+                password_hash=generate_password_hash(password),
+                role=role,
+            )
+            db.session.add(user)
+            db.session.commit()
+            _finish_session(user)
+            flash("Account created successfully!", "success")
+            return redirect(url_for("index"))
+    return render_template("register.html")
 
 
 @bp.route("/auth/callback")
@@ -116,11 +171,12 @@ def callback():
 
 @bp.route("/logout", methods=["POST"])
 def logout():
+    is_entra_user = g.user is not None and not g.user.external_id.startswith(("local:", "dev:"))
     csrf = session.get("csrf")
     session.clear()
     if csrf:
         session["csrf"] = csrf
-    if current_app.config["AUTH_MODE"] == "entra":
+    if current_app.config["AUTH_MODE"] == "entra" and is_entra_user:
         authority = _get_authority().rstrip("/")
         return redirect(
             f"{authority}/oauth2/v2.0/logout?post_logout_redirect_uri={url_for('index', _external=True)}"
