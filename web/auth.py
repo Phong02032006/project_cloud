@@ -119,7 +119,6 @@ def register():
         email = request.form.get("email", "").strip().lower()
         password = request.form.get("password", "")
         confirm = request.form.get("confirm_password", "")
-        role = request.form.get("role", "student")
 
         if not name or not email or "@" not in email:
             flash("Please enter a valid full name and email.", "danger")
@@ -127,8 +126,6 @@ def register():
             flash("Password must be at least 6 characters.", "danger")
         elif password != confirm:
             flash("Passwords do not match.", "danger")
-        elif role not in ROLES:
-            flash("Please choose a valid role.", "danger")
         elif User.query.filter_by(external_id=f"local:{email}").first():
             flash("An account with this email already exists. Please sign in.", "danger")
         else:
@@ -137,12 +134,12 @@ def register():
                 name=name,
                 email=email,
                 password_hash=generate_password_hash(password),
-                role=role,
+                role="student",
             )
             db.session.add(user)
             db.session.commit()
             _finish_session(user)
-            flash("Account created successfully!", "success")
+            flash("Student account created successfully!", "success")
             return redirect(url_for("index"))
     return render_template("register.html")
 

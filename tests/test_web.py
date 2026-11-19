@@ -980,13 +980,14 @@ def test_register_and_password_login_in_entra_mode(app):
     })
     assert "at least 6 characters" in bad.get_data(as_text=True)
 
-    # Successful registration signs user in and redirects to student dashboard
+    # Registration ignores any tampered role=teacher and always creates a student
     ok = c.post("/register", data={
         "csrf": token, "name": "New Student", "email": "new@x.edu",
-        "password": "secret123", "confirm_password": "secret123", "role": "student",
+        "password": "secret123", "confirm_password": "secret123", "role": "teacher",
     })
     assert ok.status_code == 302 and ok.headers["Location"].endswith("/")
     assert "New Student" in c.get("/student").get_data(as_text=True)
+    assert c.get("/teacher").status_code == 403
 
     # Logout of a local user stays in the app (does not redirect to Microsoft logout)
     out = c.post("/logout", data={"csrf": csrf(c, "/student")})
