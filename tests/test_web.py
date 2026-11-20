@@ -1203,3 +1203,45 @@ def test_entra_common_personal_account_defaults_to_student(app, monkeypatch):
     assert "Guest User" in c.get("/student").get_data(as_text=True)
 
 
+def test_ai_generate_from_uploaded_documents(app):
+    import io
+    from docx import Document
+
+    teacher, _, t, exam_id = _setup(app)
+
+    # 1. Generate from uploaded .txt file (no textarea text)
+    txt_bytes = io.BytesIO("Cloud computing separates compute and storage layers.".encode("utf-8"))
+    r_txt = teacher.post(
+        f"/teacher/exams/{exam_id}/generate-ai",
+        data={"csrf": t, "lesson_text": "", "num_questions": "2", "lesson_file": (txt_bytes, "notes.txt")},
+        content_type="multipart/form-data",
+        follow_redirects=True,
+    )
+    assert "Generated and added 2 question(s)" in r_txt.get_data(as_text=True)
+
+    # 2. Generate from uploaded .docx file
+    doc = Document()
+    doc.add_paragraph("Amazon SQS decouples web servers from serverless Lambda workers.")
+    doc_buf = io.BytesIO()
+    doc.save(doc_buf)
+    doc_buf.seek(0)
+    r_docx = teacher.post(
+        f"/teacher/exams/{exam_id}/generate-ai",
+        data={"csrf": t, "lesson_text": "", "num_questions": "2", "lesson_file": (doc_buf, "lesson.docx")},
+        content_type="multipart/form-data",
+        follow_redirects=True,
+    )
+    assert "Generated and added 2 question(s)" in r_docx.get_data(as_text=True)
+
+    # 3. Reject unsupported extension cleanly
+    bad_buf = io.BytesIO(b"binary")
+    r_bad = teacher.post(
+        f"/teacher/exams/{exam_id}/generate-ai",
+        data={"csrf": t, "lesson_text": "", "num_questions": "2", "lesson_file": (bad_buf, "malware.exe")},
+        content_type="multipart/form-data",
+        follow_redirects=True,
+    )
+    assert "Unsupported document format" in r_bad.get_data(as_text=True)
+
+
+

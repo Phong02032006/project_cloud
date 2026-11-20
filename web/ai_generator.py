@@ -1,3 +1,4 @@
+import io
 import json
 import os
 import re
@@ -5,6 +6,8 @@ import re
 from flask import current_app, has_app_context
 
 MAX_LESSON_CHARS = 12000
+MAX_DOC_BYTES = 10 * 1024 * 1024  # 10 MB
+ALLOWED_DOC_EXTENSIONS = {".txt", ".md", ".csv", ".pdf", ".docx"}
 
 SYSTEM_PROMPT = """You are an expert educational assessment designer for QuizCloud.
 Generate multiple-choice questions (MCQs) strictly based on the provided lesson text.
@@ -23,6 +26,71 @@ def _cfg(key: str, default: str = "") -> str:
     if has_app_context():
         return (current_app.config.get(key) or default).strip()
     return (os.environ.get(key) or default).strip()
+
+
+def extract_text_from_upload(file_storage) -> str:
+    """Extract plain text (up to MAX_LESSON_CHARS) from an uploaded .txt/.md/.csv/.pdf/.docx file."""
+    if not file_storage or not getattr(file_storage, "filename", ""):
+        return ""
+    ext = os.path.splitext(file_storage.filename)[1].lower()
+    if ext not in ALLOWED_DOC_EXTENSIONS:
+        allowed = ", ".join(sorted(ALLOWED_DOC_EXTENSIONS))
+        raise ValueError(f"Unsupported document format '{ext}'. Allowed formats: {allowed}.")
+
+    data = file_storage.read()
+    if not data:
+        raise ValueError("Uploaded document file is empty.")
+    if len(data) > MAX_DOC_BYTES:
+        raise ValueError("Document size exceeds the 10 MB limit.")
+
+    if ext in (".txt", ".md", ".csv"):
+        for encoding in ("utf-8-sig", "utf-8", "latin-1"):
+            try:
+                text = data.decode(encoding).strip()
+                break
+            except UnicodeDecodeError:
+                text = ""
+    elif ext == ".pdf":
+        from pypdf import PdfReader
+
+        reader = PdfReader(io.BytesIO(data))
+        chunks, total = [], 0
+        for page in reader.pages:
+            part = (page.extract_text() or "").strip()
+            if part:
+                chunks.append(part)
+                total += len(part)
+                if total >= MAX_LESSON_CHARS:
+                    break
+        text = "\n\n".join(chunks).strip()
+    else:  # .docx
+        from docx import Document
+
+        doc = Document(io.BytesIO(data))
+        chunks, total = [], 0
+        for p in doc.paragraphs:
+            part = p.text.strip()
+            if part:
+                chunks.append(part)
+                total += len(part)
+                if total >= MAX_LESSON_CHARS:
+                    break
+        if total < MAX_LESSON_CHARS:
+            for table in doc.tables:
+                for row in table.rows:
+                    row_text = " | ".join(cell.text.strip() for cell in row.cells if cell.text.strip())
+                    if row_text:
+                        chunks.append(row_text)
+                        total += len(row_text)
+                        if total >= MAX_LESSON_CHARS:
+                            break
+                if total >= MAX_LESSON_CHARS:
+                    break
+        text = "\n\n".join(chunks).strip()
+
+    if not text:
+        raise ValueError("Could not extract readable text from the uploaded document. If it is a scanned PDF, please paste the text manually.")
+    return text[:MAX_LESSON_CHARS]
 
 
 def _demo_questions(lesson_text: str) -> list[dict]:

@@ -234,10 +234,14 @@
       </form>
       <div class="qc-divider">or</div>
       <h6 class="mb-2"><i class="bi bi-stars text-primary"></i> Generate questions with Azure AI</h6>
-      <p class="small text-secondary mb-2">Paste your lesson notes or study material and let Azure OpenAI generate multiple-choice questions automatically.</p>
-      <form method="post" action="{{ url_for('question_generate_ai', exam_id=exam.id) }}" class="js-edit" id="ai-generate-form">
+      <p class="small text-secondary mb-2">Upload a document (<code>.pdf</code>, <code>.docx</code>, <code>.txt</code>) or paste your lesson notes and let Azure OpenAI generate multiple-choice questions automatically.</p>
+      <form method="post" action="{{ url_for('question_generate_ai', exam_id=exam.id) }}" enctype="multipart/form-data" class="js-edit" id="ai-generate-form">
         <input type="hidden" name="csrf" value="{{ csrf_token() }}">
-        <textarea name="lesson_text" class="form-control mb-2" rows="5" placeholder="Dán nội dung bài giảng, tóm tắt chương học hoặc tài liệu vào đây..." required></textarea>
+        <div class="mb-2">
+          <label class="form-label small text-secondary mb-1"><i class="bi bi-file-earmark-text"></i> Upload document (optional, max 10MB)</label>
+          <input type="file" name="lesson_file" accept=".pdf,.docx,.txt,.md,.csv" class="form-control form-control-sm">
+        </div>
+        <textarea name="lesson_text" class="form-control mb-2" rows="4" placeholder="Hoặc dán nội dung bài giảng, tóm tắt chương học vào đây..."></textarea>
         <div class="input-group mb-3">
           <span class="input-group-text">Questions</span>
           <input name="num_questions" type="number" min="1" max="15" value="5" class="form-control" required>
@@ -320,7 +324,15 @@
   }
   const aiForm = document.getElementById("ai-generate-form");
   if (aiForm) {
-    aiForm.addEventListener("submit", () => {
+    aiForm.addEventListener("submit", e => {
+      const text = (aiForm.querySelector('[name="lesson_text"]')?.value || "").trim();
+      const fileInput = aiForm.querySelector('[name="lesson_file"]');
+      const hasFile = fileInput && fileInput.files && fileInput.files.length > 0;
+      if (!text && !hasFile) {
+        e.preventDefault();
+        alert("Please upload a document or paste lesson text first.");
+        return;
+      }
       const btn = document.getElementById("ai-generate-btn");
       if (btn) {
         btn.disabled = true;

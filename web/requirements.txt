@@ -9,3 +9,5 @@ pymssql==2.3.2
 azure-storage-blob
 openai
 azure-messaging-webpubsubservice
+pypdf>=4.0.0
+python-docx>=1.1.0

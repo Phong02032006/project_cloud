@@ -708,9 +708,19 @@ def register_routes(app):
     def question_generate_ai(exam_id):
         exam = _own_exam(exam_id)
         lesson_text = request.form.get("lesson_text", "").strip()
+        lesson_file = request.files.get("lesson_file")
         num_questions = request.form.get("num_questions", 5, type=int)
+
+        if lesson_file and getattr(lesson_file, "filename", ""):
+            try:
+                doc_text = ai_generator.extract_text_from_upload(lesson_file)
+            except Exception as exc:
+                flash(f"Could not read document: {exc}", "danger")
+                return redirect(url_for("exam_manage", exam_id=exam.id))
+            lesson_text = f"{lesson_text}\n\n{doc_text}".strip() if lesson_text else doc_text
+
         if not lesson_text:
-            flash("Please enter lesson content to generate questions.", "danger")
+            flash("Please paste lesson content or upload a document (.pdf, .docx, .txt).", "danger")
             return redirect(url_for("exam_manage", exam_id=exam.id))
         try:
             generated = ai_generator.generate_mcqs_from_text(lesson_text, num_questions=num_questions)
