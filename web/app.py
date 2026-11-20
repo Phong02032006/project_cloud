@@ -964,6 +964,7 @@ def register_routes(app):
                 "total_questions": total_q,
                 "submitted_at": s.submitted_at.strftime("%b %d, %Y %H:%M") if s.submitted_at else "",
                 "updated_at": updated_display,
+                "_sort_ts": last_dt.timestamp() if last_dt else 0,
                 "details_url": url_for("submission_view", sub_id=s.id),
                 "retake_url": url_for("ticket_grant", exam_id=exam.id, student_id=s.student_id),
                 "has_ticket": s.student_id in tickets,
@@ -1032,6 +1033,7 @@ def register_routes(app):
                 is_last = (idx == len(extra_subs) - 1) or (extra_subs[idx + 1].student_id != s.student_id)
                 submissions_data.append(_sub_row(s, is_last))
 
+        submissions_data.sort(key=lambda r: (1 if r["status"] == "not_started" else 0, -r.pop("_sort_ts", 0)))
         return attempts, submissions_data
 
     @app.route("/teacher/exams/<int:exam_id>/results")

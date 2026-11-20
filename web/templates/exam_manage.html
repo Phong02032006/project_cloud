@@ -91,7 +91,7 @@
         <input type="hidden" name="csrf" value="{{ csrf_token() }}">
         <div class="fw-semibold small mb-2">1. Tìm học sinh theo email</div>
         <input type="text" id="student-filter-input" data-search-url="{{ url_for('exam_students_search', exam_id=exam.id) }}" class="form-control form-control-sm mb-2" placeholder="Nhập email học sinh để tìm (ít nhất 3 ký tự)...">
-        <div id="student-search-results" class="border rounded p-2 mb-3" style="max-height:175px;overflow-y:auto;background:#fbfbfd" hidden></div>
+        <div id="student-search-results" class="border rounded p-2 mb-3" style="max-height:175px;overflow-y:auto;background:var(--apple-surface-secondary)" hidden></div>
 
         <div class="fw-semibold small mb-1">2. Nhập hoặc dán nhiều email cùng lúc</div>
         <div class="form-text mt-0 mb-2">Phân tách bằng dấu phẩy (<code>,</code>), chấm phẩy (<code>;</code>) hoặc xuống dòng. Hỗ trợ thêm trước email Microsoft / Entra ID khi học sinh chưa đăng nhập lần đầu.</div>

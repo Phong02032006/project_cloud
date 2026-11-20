@@ -1265,4 +1265,31 @@ def test_ai_generate_from_uploaded_documents(app):
     assert "Unsupported document format" in r_bad.get_data(as_text=True)
 
 
+def test_results_sorted_most_recent_first_and_ui_toggles_present(app):
+    from datetime import timedelta
+    from models import utcnow
+
+    teacher, s1, t, exam_id = _setup(app)
+    s2 = app.test_client()
+    login(s2, "Second Student", "s2@x.edu", "student")
+    teacher.post(f"/teacher/exams/{exam_id}/visibility", data={"csrf": t, "visibility": "public"})
+
+    # s1 submits earlier, s2 submits later -> s2 must be listed before s1
+    _take(s1, exam_id, {"q1": "0"})
+    _take(s2, exam_id, {"q1": "0"})
+    with app.app_context():
+        subs = Submission.query.order_by(Submission.id).all()
+        subs[0].submitted_at = utcnow() - timedelta(minutes=10)
+        subs[1].submitted_at = utcnow()
+        db.session.commit()
+
+    live = teacher.get(f"/teacher/exams/{exam_id}/live.json").get_json()
+    assert [r["email"] for r in live["submissions"]] == ["s2@x.edu", "s@x.edu"]
+
+    html = teacher.get(f"/teacher/exams/{exam_id}/results").get_data(as_text=True)
+    assert "qcSetLang('en')" in html and "qcToggleTheme()" in html
+    assert html.index("s2@x.edu") < html.index("s@x.edu")
+
+
+
 
