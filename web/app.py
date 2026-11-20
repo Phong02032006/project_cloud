@@ -124,9 +124,9 @@ def is_student_assigned(user, quiz):
     email = user.email.strip().lower()
     if not email:
         return False
-    return db.session.query(
-        QuizAssignment.query.filter_by(quiz_id=quiz.id, student_email=email).exists()
-    ).scalar()
+    return db.session.query(QuizAssignment.id).filter_by(
+        quiz_id=quiz.id, student_email=email
+    ).first() is not None
 
 
 def can_access_quiz(user, quiz):
