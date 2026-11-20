@@ -87,7 +87,7 @@
   {% if (exam.visibility or 'private') == 'private' %}
   <div class="row g-4 pt-3">
     <div class="col-lg-5">
-      <form method="post" action="{{ url_for('exam_assignments_add', exam_id=exam.id) }}">
+      <form method="post" action="{{ url_for('exam_assignments_add', exam_id=exam.id) }}" id="assignment-add-form">
         <input type="hidden" name="csrf" value="{{ csrf_token() }}">
         <div class="fw-semibold small mb-2">1. Tìm học sinh theo email</div>
         <input type="text" id="student-filter-input" data-search-url="{{ url_for('exam_students_search', exam_id=exam.id) }}" class="form-control form-control-sm mb-2" placeholder="Nhập email học sinh để tìm (ít nhất 3 ký tự)...">
@@ -97,12 +97,13 @@
         <div class="form-text mt-0 mb-2">Phân tách bằng dấu phẩy (<code>,</code>), chấm phẩy (<code>;</code>) hoặc xuống dòng. Hỗ trợ thêm trước email Microsoft / Entra ID khi học sinh chưa đăng nhập lần đầu.</div>
         <textarea name="bulk_emails" class="form-control form-control-sm mb-3" rows="3" placeholder="student1@school.edu, student2@school.edu&#10;student3@outlook.com"></textarea>
         <button type="submit" class="btn btn-primary btn-sm w-100"><i class="bi bi-person-plus"></i> Thêm học sinh vào đề thi</button>
+        <div id="assignment-feedback" class="mt-2"></div>
       </form>
     </div>
 
     <div class="col-lg-7">
       <div class="d-flex align-items-center justify-content-between mb-2">
-        <span class="fw-semibold small">Danh sách thí sinh được giao ({{ assigned_list|length }})</span>
+        <span class="fw-semibold small">Danh sách thí sinh được giao (<span id="assigned-count">{{ assigned_list|length }}</span>)</span>
       </div>
       <div class="table-responsive border rounded" style="max-height:360px;overflow-y:auto">
         <table class="table qc-table table-sm m-0">
@@ -114,7 +115,7 @@
               <th class="text-end">Thao tác</th>
             </tr>
           </thead>
-          <tbody>
+          <tbody id="assigned-tbody">
             {% for item in assigned_list %}
               <tr>
                 <td class="fw-medium small">{{ item.email }}</td>
@@ -127,7 +128,7 @@
                   {% endif %}
                 </td>
                 <td class="text-end">
-                  <form method="post" action="{{ url_for('exam_assignment_delete', exam_id=exam.id, assignment_id=item.id) }}" class="m-0 d-inline">
+                  <form method="post" action="{{ url_for('exam_assignment_delete', exam_id=exam.id, assignment_id=item.id) }}" class="m-0 d-inline js-assignment-delete">
                     <input type="hidden" name="csrf" value="{{ csrf_token() }}">
                     <button class="btn btn-sm btn-ghost text-danger py-0 px-2">Xóa</button>
                   </form>
@@ -327,36 +328,107 @@
   }
   const filterInput = document.getElementById("student-filter-input");
   const searchBox = document.getElementById("student-search-results");
+  const escHtml = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+  const runStudentSearch = () => {
+    if (!filterInput || !searchBox) return;
+    const q = filterInput.value.trim();
+    if (q.length < 3) {
+      searchBox.hidden = true;
+      searchBox.innerHTML = "";
+      return;
+    }
+    fetch(`${filterInput.dataset.searchUrl}?q=${encodeURIComponent(q)}`, {cache: "no-store"})
+      .then(r => r.json())
+      .then(d => {
+        searchBox.hidden = false;
+        if (!d.students || !d.students.length) {
+          searchBox.innerHTML = '<div class="small text-secondary p-2 text-center">Không tìm thấy tài khoản học sinh nào khớp email này.</div>';
+          return;
+        }
+        searchBox.innerHTML = d.students.map(u => `
+          <label class="d-flex align-items-center gap-2 py-1 px-2 rounded small" style="cursor:pointer">
+            <input class="form-check-input m-0" type="checkbox" name="student_emails" value="${escHtml(u.email)}" ${u.already ? "checked disabled" : ""}>
+            <span class="fw-medium text-truncate">${escHtml(u.name)}</span>
+            <span class="text-secondary text-truncate ms-auto">${escHtml(u.email)}</span>
+            ${u.already ? '<span class="qc-chip success py-0 px-2">Đã thêm</span>' : ""}
+          </label>`).join("");
+      })
+      .catch(() => {});
+  };
   if (filterInput && searchBox) {
-    const escHtml = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
     let searchTimer = null;
     filterInput.addEventListener("input", () => {
       clearTimeout(searchTimer);
-      const q = filterInput.value.trim();
-      if (q.length < 3) {
-        searchBox.hidden = true;
-        searchBox.innerHTML = "";
-        return;
-      }
-      searchTimer = setTimeout(() => {
-        fetch(`${filterInput.dataset.searchUrl}?q=${encodeURIComponent(q)}`, {cache: "no-store"})
-          .then(r => r.json())
-          .then(d => {
-            searchBox.hidden = false;
-            if (!d.students || !d.students.length) {
-              searchBox.innerHTML = '<div class="small text-secondary p-2 text-center">Không tìm thấy tài khoản học sinh nào khớp email này.</div>';
-              return;
-            }
-            searchBox.innerHTML = d.students.map(u => `
-              <label class="d-flex align-items-center gap-2 py-1 px-2 rounded small" style="cursor:pointer">
-                <input class="form-check-input m-0" type="checkbox" name="student_emails" value="${escHtml(u.email)}" ${u.already ? "checked disabled" : ""}>
-                <span class="fw-medium text-truncate">${escHtml(u.name)}</span>
-                <span class="text-secondary text-truncate ms-auto">${escHtml(u.email)}</span>
-                ${u.already ? '<span class="qc-chip success py-0 px-2">Đã thêm</span>' : ""}
-              </label>`).join("");
-          })
-          .catch(() => {});
-      }, 220);
+      searchTimer = setTimeout(runStudentSearch, 220);
+    });
+  }
+  const renderAssignedTable = list => {
+    const tbody = document.getElementById("assigned-tbody");
+    const countEl = document.getElementById("assigned-count");
+    if (countEl) countEl.textContent = list.length;
+    if (!tbody) return;
+    if (!list.length) {
+      tbody.innerHTML = '<tr><td colspan="4" class="text-center text-secondary small py-4">Chưa có thí sinh nào được gán cho đề thi riêng tư này.</td></tr>';
+      return;
+    }
+    const csrfVal = document.querySelector('#assignment-add-form [name="csrf"]')?.value || "";
+    tbody.innerHTML = list.map(item => `
+      <tr>
+        <td class="fw-medium small">${escHtml(item.email)}</td>
+        <td class="small">${escHtml(item.name || "—")}</td>
+        <td>${item.has_account ? '<span class="qc-chip success">Đã có tài khoản</span>' : '<span class="qc-chip warning">Chờ đăng nhập</span>'}</td>
+        <td class="text-end">
+          <form method="post" action="${escHtml(item.delete_url)}" class="m-0 d-inline js-assignment-delete">
+            <input type="hidden" name="csrf" value="${escHtml(csrfVal)}">
+            <button class="btn btn-sm btn-ghost text-danger py-0 px-2">Xóa</button>
+          </form>
+        </td>
+      </tr>`).join("");
+  };
+  const showAssignFeedback = (msg, category) => {
+    const box = document.getElementById("assignment-feedback");
+    if (!box || !msg) return;
+    const tone = category === "success" ? "success" : "warning";
+    box.innerHTML = `<div class="alert alert-${tone} py-2 px-3 small mb-0">${escHtml(msg)}</div>`;
+  };
+  const assignForm = document.getElementById("assignment-add-form");
+  if (assignForm) {
+    assignForm.addEventListener("submit", e => {
+      e.preventDefault();
+      fetch(assignForm.action, {
+        method: "POST",
+        headers: {"X-Requested-With": "XMLHttpRequest"},
+        body: new FormData(assignForm),
+      })
+        .then(r => r.json())
+        .then(d => {
+          showAssignFeedback(d.message, d.category);
+          if (Array.isArray(d.assigned)) renderAssignedTable(d.assigned);
+          const bulk = assignForm.querySelector('[name="bulk_emails"]');
+          if (bulk && d.ok) bulk.value = "";
+          runStudentSearch();
+        })
+        .catch(() => assignForm.submit());
+    });
+  }
+  const assignedTbody = document.getElementById("assigned-tbody");
+  if (assignedTbody) {
+    assignedTbody.addEventListener("submit", e => {
+      const delForm = e.target.closest(".js-assignment-delete");
+      if (!delForm) return;
+      e.preventDefault();
+      fetch(delForm.action, {
+        method: "POST",
+        headers: {"X-Requested-With": "XMLHttpRequest"},
+        body: new FormData(delForm),
+      })
+        .then(r => r.json())
+        .then(d => {
+          showAssignFeedback(d.message, d.category);
+          if (Array.isArray(d.assigned)) renderAssignedTable(d.assigned);
+          runStudentSearch();
+        })
+        .catch(() => delForm.submit());
     });
   }
   const copyBtn = document.getElementById("copy-access-code-btn");

@@ -539,9 +539,7 @@ def register_routes(app):
             return redirect(url_for("exam_manage", exam_id=exam.id))
         return render_template("exam_form.html")
 
-    def _render_exam_manage(exam):
-        if exam.ensure_access_code() and db.session.is_modified(exam):
-            db.session.commit()
+    def _assigned_students_payload(exam):
         assigned_emails = {(a.student_email or "").strip().lower() for a in exam.assignments if a.student_email}
         users_by_email = {}
         if assigned_emails:
@@ -557,8 +555,14 @@ def register_routes(app):
                 "email": em,
                 "name": u.name if u else None,
                 "has_account": u is not None,
-                "created_at": a.created_at,
+                "delete_url": url_for("exam_assignment_delete", exam_id=exam.id, assignment_id=a.id),
             })
+        return assigned_emails, assigned_list
+
+    def _render_exam_manage(exam):
+        if exam.ensure_access_code() and db.session.is_modified(exam):
+            db.session.commit()
+        assigned_emails, assigned_list = _assigned_students_payload(exam)
         return render_template(
             "exam_manage.html",
             exam=exam,
@@ -647,8 +651,14 @@ def register_routes(app):
                 if token and token.strip():
                     candidates.append(token.strip().lower())
 
+        wants_json = request.headers.get("X-Requested-With") == "XMLHttpRequest"
+
         if not candidates:
-            flash("Vui lòng chọn học sinh hoặc nhập ít nhất 1 email.", "warning")
+            msg = "Vui lòng chọn học sinh hoặc nhập ít nhất 1 email."
+            if wants_json:
+                _, assigned_list = _assigned_students_payload(exam)
+                return jsonify(ok=False, message=msg, category="warning", assigned=assigned_list)
+            flash(msg, "warning")
             return redirect(url_for("exam_manage", exam_id=exam.id))
 
         existing = {(a.student_email or "").strip().lower() for a in exam.assignments}
@@ -672,7 +682,13 @@ def register_routes(app):
             parts.append(f"bỏ qua {skipped_dup} email đã tồn tại")
         if invalid:
             parts.append(f"bỏ qua {len(invalid)} email không hợp lệ ({', '.join(invalid[:3])})")
-        flash(", ".join(parts) + ".", "success" if added > 0 else "warning")
+        msg = ", ".join(parts) + "."
+        cat = "success" if added > 0 else "warning"
+        if wants_json:
+            db.session.expire(exam, ["assignments"])
+            _, assigned_list = _assigned_students_payload(exam)
+            return jsonify(ok=added > 0, message=msg, category=cat, assigned=assigned_list)
+        flash(msg, cat)
         return redirect(url_for("exam_manage", exam_id=exam.id))
 
     @app.route("/teacher/exams/<int:exam_id>/students/<int:assignment_id>/delete", methods=["POST"], endpoint="exam_student_delete")
@@ -686,7 +702,12 @@ def register_routes(app):
         email = assignment.student_email
         db.session.delete(assignment)
         db.session.commit()
-        flash(f"Đã xóa {email} khỏi danh sách thí sinh.", "success")
+        msg = f"Đã xóa {email} khỏi danh sách thí sinh."
+        if request.headers.get("X-Requested-With") == "XMLHttpRequest":
+            db.session.expire(exam, ["assignments"])
+            _, assigned_list = _assigned_students_payload(exam)
+            return jsonify(ok=True, message=msg, category="success", assigned=assigned_list)
+        flash(msg, "success")
         return redirect(url_for("exam_manage", exam_id=exam.id))
 
     @app.route("/teacher/exams/<int:exam_id>/questions", methods=["POST"])

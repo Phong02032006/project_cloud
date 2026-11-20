@@ -1119,13 +1119,26 @@ def test_private_exam_permissions_assignments_and_realtime_monitoring(app):
     assert "Đã mở quyền truy cập bài thi" in ok_join.get_data(as_text=True)
     assert s_code.get(f"/exam/{exam_id}").status_code == 200
 
-    # Teacher removes future_entra@school.edu from assignments
+    # Teacher removes future_entra@school.edu from assignments (including AJAX XHR mode)
     with app.app_context():
         assign_row = QuizAssignment.query.filter_by(quiz_id=exam_id, student_email="future_entra@school.edu").one()
         aid = assign_row.id
-    teacher.post(f"/teacher/exams/{exam_id}/assignments/{aid}/delete", data={"csrf": t})
+    del_ajax = teacher.post(
+        f"/teacher/exams/{exam_id}/assignments/{aid}/delete",
+        data={"csrf": t},
+        headers={"X-Requested-With": "XMLHttpRequest"},
+    ).get_json()
+    assert del_ajax["ok"] is True and len(del_ajax["assigned"]) == 2
     with app.app_context():
         assert QuizAssignment.query.filter_by(id=aid).first() is None
+
+    # Adding via AJAX returns JSON without page reload
+    add_ajax = teacher.post(
+        f"/teacher/exams/{exam_id}/assignments",
+        data={"csrf": t, "bulk_emails": "ajax_student@school.edu"},
+        headers={"X-Requested-With": "XMLHttpRequest"},
+    ).get_json()
+    assert add_ajax["ok"] is True and len(add_ajax["assigned"]) == 3
 
     # Teacher can regenerate access_code
     teacher.post(f"/teacher/exams/{exam_id}/access-code", data={"csrf": t})
