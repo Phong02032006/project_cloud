@@ -895,11 +895,28 @@ h3 { font-size: 1.45rem; }
 [data-bs-theme="dark"] .qc-answer-row,
 [data-bs-theme="dark"] .qc-cert-banner,
 [data-bs-theme="dark"] .btn-soft,
+[data-bs-theme="dark"] .btn-ghost,
 [data-bs-theme="dark"] .form-control,
 [data-bs-theme="dark"] .form-select,
 [data-bs-theme="dark"] .input-group-text {
   background: var(--apple-surface-secondary);
   border-color: var(--apple-hairline);
+  color: var(--apple-ink);
+}
+
+[data-bs-theme="dark"] .btn-ghost:hover,
+[data-bs-theme="dark"] .btn-soft:hover {
+  background: #323236;
+  border-color: #48484a;
+  color: var(--apple-ink);
+}
+
+[data-bs-theme="dark"] .qc-progress {
+  background: #38383a;
+}
+
+[data-bs-theme="dark"] .qc-table td {
+  border-color: var(--apple-divider);
   color: var(--apple-ink);
 }
 
