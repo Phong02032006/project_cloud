@@ -58,7 +58,7 @@
 <div class="qc-card overflow-hidden">
   <div class="table-responsive">
   <table class="table qc-table">
-    <thead><tr><th>Student</th><th>Attempt</th><th>Score</th><th style="width:22%">Percent</th><th>Result</th><th>Integrity</th><th>Updated / Submitted (UTC)</th><th></th></tr></thead>
+    <thead><tr><th>Student</th><th>Attempt</th><th>Score</th><th style="width:16%;min-width:130px">Percent</th><th>Result</th><th>Integrity</th><th>Updated / Submitted (UTC)</th><th></th></tr></thead>
     <tbody id="submissions-tbody">
     {% for s in submissions %}
       <tr data-student-email="{{ (s.email or '')|lower }}">

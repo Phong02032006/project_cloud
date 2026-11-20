@@ -43,16 +43,27 @@
     ["Already have an account?", "Đã có tài khoản?"],
     ["Don't have an account?", "Chưa có tài khoản?"],
     ["TEACHER DASHBOARD", "BẢNG ĐIỀU KHIỂN GIÁO VIÊN"],
+    ["Teacher dashboard", "Bảng điều khiển giáo viên"],
     ["STUDENT DASHBOARD", "BẢNG ĐIỀU KHIỂN SINH VIÊN"],
+    ["Student space", "Không gian sinh viên"],
     ["New exam", "Tạo đề mới"],
     ["+ New exam", "+ Tạo đề mới"],
     ["Exams", "Bài thi"],
+    ["Open exams", "Đề đang mở"],
+    ["Completed", "Đã hoàn thành"],
+    ["Certificates earned", "Chứng chỉ đã đạt"],
+    ["Exams for you", "Bài thi dành cho bạn"],
     ["Published", "Đã mở"],
     ["Draft", "Bản nháp"],
     ["Graded submissions", "Bài đã chấm"],
     ["Average score", "Điểm trung bình"],
     ["Pass rate", "Tỉ lệ đạt"],
     ["MY EXAMS", "BÀI THI CỦA TÔI"],
+    ["My exams", "Bài thi của tôi"],
+    ["No description", "Không có mô tả"],
+    ["Managed", "Giám sát"],
+    ["Under review", "Đang xem xét"],
+    ["Grading", "Đang chấm"],
     ["Average", "Trung bình"],
     ["Edit", "Chỉnh sửa"],
     ["Results", "Kết quả"],
@@ -177,6 +188,10 @@
     "Sao chép": "Copy",
     "Đã chép": "Copied",
     "Tạo mã mới": "New code",
+    "Riêng tư": "Private",
+    "Công khai": "Public",
+    "Đề công khai": "Public exam",
+    "Tham gia": "Join",
   };
 
   const TO_VI = {};
@@ -193,6 +208,7 @@
   const PH_EN_TO_VI = {
     "Hoặc dán nội dung bài giảng, tóm tắt chương học vào đây...": "Hoặc dán nội dung bài giảng, tóm tắt chương học vào đây...",
     "Nhập email học sinh để tìm (ít nhất 3 ký tự)...": "Nhập email học sinh để tìm (ít nhất 3 ký tự)...",
+    "Nhập mã bài thi (VD: QC842A)": "Nhập mã bài thi (VD: QC842A)",
     "Enter your password": "Nhập mật khẩu",
     "At least 6 characters": "Ít nhất 6 ký tự",
     "Re-enter password": "Nhập lại mật khẩu",
@@ -201,6 +217,7 @@
   const PH_VI_TO_EN = {
     "Hoặc dán nội dung bài giảng, tóm tắt chương học vào đây...": "Or paste lesson notes or study summary here...",
     "Nhập email học sinh để tìm (ít nhất 3 ký tự)...": "Search student by email (at least 3 characters)...",
+    "Nhập mã bài thi (VD: QC842A)": "Enter exam code (e.g. QC842A)",
     "Nhập mật khẩu": "Enter your password",
     "Ít nhất 6 ký tự": "At least 6 characters",
     "Nhập lại mật khẩu": "Re-enter password",
@@ -224,6 +241,13 @@
       if ((m = norm.match(/^(\d+)\s+violations?$/i))) return `${m[1]} vi phạm`;
       if ((m = norm.match(/^(\d+)\s+min$/i))) return `${m[1]} phút`;
       if ((m = norm.match(/^(\d+\/\d+)\s+answered$/i))) return `${m[1]} đã trả lời`;
+      if ((m = norm.match(/^(\d+)\s+students?$/i))) return `${m[1]} học sinh`;
+      if ((m = norm.match(/^Passed\s*·\s*([\d.]+%)$/i))) return `Đạt · ${m[1]}`;
+      if ((m = norm.match(/^Failed\s*·\s*([\d.]+%)$/i))) return `Chưa đạt · ${m[1]}`;
+      if ((m = norm.match(/^(\d+\/\d+)\s+attempts$/i))) return `${m[1]} lượt`;
+      if ((m = norm.match(/^All \((\d+)\)$/))) return `Tất cả (${m[1]})`;
+      if ((m = norm.match(/^Assigned exams \((\d+)\)$/))) return `Bài thi được giao (${m[1]})`;
+      if ((m = norm.match(/^Public exams \((\d+)\)$/))) return `Đề công khai (${m[1]})`;
       if ((m = norm.match(/^Assigned students \((\d+)\)$/))) return `Danh sách thí sinh được giao (${m[1]})`;
     } else {
       if ((m = norm.match(/^Xin chào,\s*(.+?)\s*(👋)?$/))) return `Hello, ${m[1]}${m[2] ? " " + m[2] : ""}`;
@@ -232,6 +256,13 @@
       if ((m = norm.match(/^(\d+)\s+vi phạm$/i))) return `${m[1]} violation${m[1] === "1" ? "" : "s"}`;
       if ((m = norm.match(/^(\d+)\s+phút$/i))) return `${m[1]} min`;
       if ((m = norm.match(/^(\d+\/\d+)\s+đã trả lời$/i))) return `${m[1]} answered`;
+      if ((m = norm.match(/^(\d+)\s+học sinh$/i))) return `${m[1]} student${m[1] === "1" ? "" : "s"}`;
+      if ((m = norm.match(/^Đạt\s*·\s*([\d.]+%)$/i))) return `Passed · ${m[1]}`;
+      if ((m = norm.match(/^Chưa đạt\s*·\s*([\d.]+%)$/i))) return `Failed · ${m[1]}`;
+      if ((m = norm.match(/^(\d+\/\d+)\s+lượt$/i))) return `${m[1]} attempts`;
+      if ((m = norm.match(/^Tất cả \((\d+)\)$/))) return `All (${m[1]})`;
+      if ((m = norm.match(/^Bài thi được giao \((\d+)\)$/))) return `Assigned exams (${m[1]})`;
+      if ((m = norm.match(/^Đề công khai \((\d+)\)$/))) return `Public exams (${m[1]})`;
       if ((m = norm.match(/^Danh sách thí sinh được giao \((\d+)\)$/))) return `Assigned students (${m[1]})`;
     }
     return null;
