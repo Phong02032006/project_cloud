@@ -159,11 +159,10 @@ def callback():
         return redirect(url_for("index"))
 
     claims = result["id_token_claims"]
-    role = _role_from_claims(claims)
-    if role is None:
-        return render_template("no_role.html"), 403
+    role = _role_from_claims(claims) or "student"
     email = claims.get("email") or claims.get("preferred_username") or ""
-    _sign_in(claims["oid"], claims.get("name") or email, email, role)
+    external_id = claims.get("oid") or claims["sub"]
+    _sign_in(external_id, claims.get("name") or email or "User", email, role)
     return redirect(url_for("index"))
 
 

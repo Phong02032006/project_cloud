@@ -1187,5 +1187,19 @@ def test_auto_migration_from_legacy_sqlite_schema(tmp_path):
         db.engine.dispose()
 
 
+def test_entra_common_personal_account_defaults_to_student(app, monkeypatch):
+    import auth as auth_mod
+
+    app.config["AUTH_MODE"] = "entra"
+
+    class FakeMsal:
+        def acquire_token_by_auth_code_flow(self, flow, args):
+            return {"id_token_claims": {"sub": "msa-123", "name": "Guest User", "preferred_username": "guest@outlook.com"}}
+
+    monkeypatch.setattr(auth_mod, "_msal_app", lambda: FakeMsal())
+    c = app.test_client()
+    r = c.get("/auth/callback?code=abc")
+    assert r.status_code == 302 and r.headers["Location"].endswith("/")
+    assert "Guest User" in c.get("/student").get_data(as_text=True)
 
 
