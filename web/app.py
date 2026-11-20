@@ -542,13 +542,15 @@ def register_routes(app):
     def _render_exam_manage(exam):
         if exam.ensure_access_code() and db.session.is_modified(exam):
             db.session.commit()
-        student_users = User.query.filter_by(role="student").order_by(User.name, User.email).all()
-        users_by_email = {(u.email or "").strip().lower(): u for u in User.query.all() if u.email}
-        assigned_emails = set()
+        assigned_emails = {(a.student_email or "").strip().lower() for a in exam.assignments if a.student_email}
+        users_by_email = {}
+        if assigned_emails:
+            for u in User.query.filter(db.func.lower(User.email).in_(assigned_emails)).all():
+                if u.email:
+                    users_by_email[u.email.strip().lower()] = u
         assigned_list = []
         for a in exam.assignments:
             em = (a.student_email or "").strip().lower()
-            assigned_emails.add(em)
             u = users_by_email.get(em)
             assigned_list.append({
                 "id": a.id,
@@ -561,9 +563,6 @@ def register_routes(app):
             "exam_manage.html",
             exam=exam,
             impact=_edit_impact(exam),
-            student_users=student_users,
-            all_students=student_users,
-            users_by_email=users_by_email,
             assigned_emails=assigned_emails,
             assigned_list=assigned_list,
         )
@@ -573,6 +572,29 @@ def register_routes(app):
     def exam_manage(exam_id):
         exam = _own_exam(exam_id)
         return _render_exam_manage(exam)
+
+    @app.route("/teacher/exams/<int:exam_id>/students/search")
+    @login_required("teacher")
+    def exam_students_search(exam_id):
+        exam = _own_exam(exam_id)
+        q = (request.args.get("q") or "").strip().lower()
+        if len(q) < 3:
+            return jsonify(students=[])
+        assigned_emails = {(a.student_email or "").strip().lower() for a in exam.assignments if a.student_email}
+        matches = (
+            User.query.filter(User.role == "student", User.email.isnot(None), db.func.lower(User.email).contains(q))
+            .order_by(User.email)
+            .limit(10)
+            .all()
+        )
+        return jsonify(students=[
+            {
+                "name": u.name,
+                "email": u.email.strip().lower(),
+                "already": u.email.strip().lower() in assigned_emails,
+            }
+            for u in matches
+        ])
 
     @app.route("/teacher/exams/<int:exam_id>/visibility", methods=["POST"])
     @login_required("teacher")

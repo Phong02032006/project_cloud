@@ -1037,11 +1037,19 @@ def test_private_exam_permissions_assignments_and_realtime_monitoring(app):
     # Another teacher is strictly blocked (403) from editing, assigning, or monitoring
     ot = csrf(other_teacher, "/teacher")
     assert other_teacher.get(f"/teacher/exams/{exam_id}").status_code == 403
+    assert other_teacher.get(f"/teacher/exams/{exam_id}/students/search?q=allowed").status_code == 403
     assert other_teacher.post(f"/teacher/exams/{exam_id}/assignments",
                               data={"csrf": ot, "bulk_emails": "a@b.com"}).status_code == 403
     assert other_teacher.get(f"/teacher/exams/{exam_id}/results").status_code == 403
     assert other_teacher.get(f"/teacher/exams/{exam_id}/live.json").status_code == 403
     assert other_teacher.get(f"/api/exams/{exam_id}/pubsub-token").status_code == 403
+
+    # Unassigned students are hidden from the exam management page until searched by email
+    initial_manage = teacher.get(f"/teacher/exams/{exam_id}").get_data(as_text=True)
+    assert "blocked@school.edu" not in initial_manage and "allowed@school.edu" not in initial_manage
+    assert teacher.get(f"/teacher/exams/{exam_id}/students/search?q=al").get_json()["students"] == []
+    found = teacher.get(f"/teacher/exams/{exam_id}/students/search?q=allowed@school.edu").get_json()["students"]
+    assert len(found) == 1 and found[0]["email"] == "allowed@school.edu" and found[0]["already"] is False
 
     # Unassigned students cannot see the private exam on dashboard and get 403 on all direct URLs
     assert "Private Final Exam" not in s_blocked.get("/student").get_data(as_text=True)

@@ -89,24 +89,9 @@
     <div class="col-lg-5">
       <form method="post" action="{{ url_for('exam_assignments_add', exam_id=exam.id) }}">
         <input type="hidden" name="csrf" value="{{ csrf_token() }}">
-        <div class="fw-semibold small mb-2">1. Chọn nhanh học sinh đã có tài khoản</div>
-        <input type="text" id="student-filter-input" class="form-control form-control-sm mb-2" placeholder="Lọc nhanh theo tên hoặc email...">
-        <div class="border rounded p-2 mb-3" style="max-height:175px;overflow-y:auto;background:#fbfbfd">
-          {% for u in student_users %}
-            {% set em = (u.email or '')|lower %}
-            {% if em %}
-              {% set already = em in assigned_emails %}
-              <label class="d-flex align-items-center gap-2 py-1 px-2 rounded small js-student-row" data-search="{{ (u.name ~ ' ' ~ em)|lower }}" style="cursor:pointer">
-                <input class="form-check-input m-0" type="checkbox" name="student_emails" value="{{ em }}" {{ 'checked disabled' if already }}>
-                <span class="fw-medium text-truncate">{{ u.name }}</span>
-                <span class="text-secondary text-truncate ms-auto">{{ em }}</span>
-                {% if already %}<span class="qc-chip success py-0 px-2">Đã thêm</span>{% endif %}
-              </label>
-            {% endif %}
-          {% else %}
-            <div class="small text-secondary p-2 text-center">Chưa có tài khoản học sinh nào trong hệ thống.</div>
-          {% endfor %}
-        </div>
+        <div class="fw-semibold small mb-2">1. Tìm học sinh theo email</div>
+        <input type="text" id="student-filter-input" data-search-url="{{ url_for('exam_students_search', exam_id=exam.id) }}" class="form-control form-control-sm mb-2" placeholder="Nhập email học sinh để tìm (ít nhất 3 ký tự)...">
+        <div id="student-search-results" class="border rounded p-2 mb-3" style="max-height:175px;overflow-y:auto;background:#fbfbfd" hidden></div>
 
         <div class="fw-semibold small mb-1">2. Nhập hoặc dán nhiều email cùng lúc</div>
         <div class="form-text mt-0 mb-2">Phân tách bằng dấu phẩy (<code>,</code>), chấm phẩy (<code>;</code>) hoặc xuống dòng. Hỗ trợ thêm trước email Microsoft / Entra ID khi học sinh chưa đăng nhập lần đầu.</div>
@@ -341,12 +326,37 @@
     });
   }
   const filterInput = document.getElementById("student-filter-input");
-  if (filterInput) {
+  const searchBox = document.getElementById("student-search-results");
+  if (filterInput && searchBox) {
+    const escHtml = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+    let searchTimer = null;
     filterInput.addEventListener("input", () => {
-      const q = filterInput.value.trim().toLowerCase();
-      document.querySelectorAll(".js-student-row").forEach(row => {
-        row.style.display = (!q || (row.dataset.search || "").includes(q)) ? "" : "none";
-      });
+      clearTimeout(searchTimer);
+      const q = filterInput.value.trim();
+      if (q.length < 3) {
+        searchBox.hidden = true;
+        searchBox.innerHTML = "";
+        return;
+      }
+      searchTimer = setTimeout(() => {
+        fetch(`${filterInput.dataset.searchUrl}?q=${encodeURIComponent(q)}`, {cache: "no-store"})
+          .then(r => r.json())
+          .then(d => {
+            searchBox.hidden = false;
+            if (!d.students || !d.students.length) {
+              searchBox.innerHTML = '<div class="small text-secondary p-2 text-center">Không tìm thấy tài khoản học sinh nào khớp email này.</div>';
+              return;
+            }
+            searchBox.innerHTML = d.students.map(u => `
+              <label class="d-flex align-items-center gap-2 py-1 px-2 rounded small" style="cursor:pointer">
+                <input class="form-check-input m-0" type="checkbox" name="student_emails" value="${escHtml(u.email)}" ${u.already ? "checked disabled" : ""}>
+                <span class="fw-medium text-truncate">${escHtml(u.name)}</span>
+                <span class="text-secondary text-truncate ms-auto">${escHtml(u.email)}</span>
+                ${u.already ? '<span class="qc-chip success py-0 px-2">Đã thêm</span>' : ""}
+              </label>`).join("");
+          })
+          .catch(() => {});
+      }, 220);
     });
   }
   const copyBtn = document.getElementById("copy-access-code-btn");
