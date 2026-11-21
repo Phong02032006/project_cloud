@@ -136,16 +136,16 @@ Requests sent to `POST GRADER_URL` must include the `x-grader-secret` header.
 ## Cloud Services Summary
 
 - **Microsoft Azure (5 services):**
-  1. *Azure App Service:* Linux PaaS hosting the core web application.
-  2. *Azure SQL Database:* Serverless relational database with ACID guarantees.
-  3. *Microsoft Entra External ID:* Enterprise identity provider with App Roles.
-  4. *Azure OpenAI Service:* Automated multiple-choice question generation from documents.
-  5. *Azure Web PubSub:* Real-time WebSocket alerts for managed exam proctoring.
+  - *Azure App Service:* Linux PaaS hosting the core web application.
+  - *Azure SQL Database:* Serverless relational database with ACID guarantees.
+  - *Microsoft Entra External ID:* Enterprise identity provider with App Roles.
+  - *Azure OpenAI Service:* Automated multiple-choice question generation from documents.
+  - *Azure Web PubSub:* Real-time WebSocket alerts for managed exam proctoring.
 - **Amazon Web Services (7 services):**
-  6. *Amazon API Gateway:* Cross-cloud HTTP API ingestion point.
-  7. *AWS Lambda:* Serverless worker for grading and document rendering.
-  8. *Amazon SQS:* Asynchronous message queue with Dead-Letter Queue (DLQ).
-  9. *Amazon S3:* Secure private object store for generated certificates.
-  10. *Amazon SES:* Transactional email delivery service.
-  11. *Amazon CloudWatch:* Centralized audit logging and telemetry.
-  12. *Amazon EventBridge Scheduler:* Periodic task runner for attempt expiration.
+  - *Amazon API Gateway:* Cross-cloud HTTP API ingestion point.
+  - *AWS Lambda:* Serverless worker for grading and document rendering.
+  - *Amazon SQS:* Asynchronous message queue with Dead-Letter Queue (DLQ).
+  - *Amazon S3:* Secure private object store for generated certificates.
+  - *Amazon SES:* Transactional email delivery service.
+  - *Amazon CloudWatch:* Centralized audit logging and telemetry.
+  - *Amazon EventBridge Scheduler:* Periodic task runner for attempt expiration.
