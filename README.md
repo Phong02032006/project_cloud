@@ -135,12 +135,13 @@ Requests sent to `POST GRADER_URL` must include the `x-grader-secret` header.
 
 ## Cloud Services Summary
 
-- **Microsoft Azure (5 services):**
+- **Microsoft Azure (6 services):**
   - *Azure App Service:* Linux PaaS hosting the core web application.
   - *Azure SQL Database:* Serverless relational database with ACID guarantees.
   - *Microsoft Entra External ID:* Enterprise identity provider with App Roles.
   - *Azure OpenAI Service:* Automated multiple-choice question generation from documents.
   - *Azure Web PubSub:* Real-time WebSocket alerts for managed exam proctoring.
+  - *Azure Blob Storage:* Object storage for question illustration images.
 - **Amazon Web Services (7 services):**
   - *Amazon API Gateway:* Cross-cloud HTTP API ingestion point.
   - *AWS Lambda:* Serverless worker for grading and document rendering.
