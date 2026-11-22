@@ -191,6 +191,30 @@
     ["was force-submitted", "đã bị giáo viên thu bài"],
     ["result released", "đã công bố kết quả"],
     ["certificate cancelled", "đã hủy chứng chỉ"],
+    // Exam manage: AI generation, settings, visibility
+    ["Upload a document (.pdf, .docx, .txt) or paste your lesson notes and let Azure OpenAI draft multiple-choice questions. You review and edit them before anything is added.", "Tải lên tài liệu (.pdf, .docx, .txt) hoặc dán nội dung bài giảng để Azure OpenAI soạn câu hỏi trắc nghiệm. Bạn sẽ duyệt và chỉnh sửa trước khi câu hỏi được thêm."],
+    ["Upload document (optional, max 10MB)", "Tải lên tài liệu (không bắt buộc, tối đa 10MB)"],
+    ["With more than one attempt, students pick the attempt that counts; at the deadline the best one is picked for anyone who has not. Attempt and deadline settings apply to all students immediately, not per version.", "Khi cho phép nhiều lượt, học sinh tự chọn lượt được tính điểm; đến hạn chốt, hệ thống chọn lượt cao điểm nhất cho ai chưa chọn. Cài đặt số lượt và hạn chốt áp dụng ngay cho mọi học sinh, không theo phiên bản."],
+    ["Managed mode", "Chế độ giám sát"],
+    ["Every violation is logged and shown on the results page. Violations: leaving fullscreen, losing focus for more than 5 seconds, reopening the exam page, and the page going silent for more than 30 seconds.", "Mọi vi phạm đều được ghi lại và hiển thị ở trang kết quả. Vi phạm gồm: thoát toàn màn hình, rời khỏi trang quá 5 giây, mở lại trang bài thi và trang mất tín hiệu quá 30 giây."],
+    ["Require fullscreen", "Bắt buộc toàn màn hình"],
+    ["Require my approval to continue after a violation", "Phải được tôi duyệt mới được làm tiếp sau khi vi phạm"],
+    ["Without approval, a student who leaves the exam can come straight back. Violations are still logged and counted.", "Nếu không cần duyệt, học sinh rời bài thi có thể quay lại ngay. Vi phạm vẫn được ghi lại và tính."],
+    ["On violation (both can be combined)", "Khi vi phạm (có thể kết hợp cả hai)"],
+    ["Withhold score and certificate until I review", "Giữ lại điểm và chứng chỉ cho đến khi tôi xem xét"],
+    ["Auto-submit after", "Tự động nộp bài sau"],
+    ["violations", "lần vi phạm"],
+    ["Allow during the exam", "Cho phép trong khi thi"],
+    ["Paste", "Dán"],
+    ["Right-click menu", "Menu chuột phải"],
+    ["Private (assigned students only)", "Riêng tư (Chỉ học sinh được thêm)"],
+    ["Public (all students)", "Công khai (Tất cả học sinh)"],
+    ["Only students whose email is on the list below, or who enter the correct join code, can access and take this exam.", "Chỉ học sinh có email trong danh sách dưới đây hoặc nhập đúng mã tham gia mới được phép truy cập và làm bài."],
+    ["This exam is Public. Every student account in the system can see and take it.", "Đề thi đang ở chế độ Công khai. Tất cả tài khoản học sinh trong hệ thống đều có thể nhìn thấy và làm bài."],
+    ["No students are assigned to this private exam yet.", "Chưa có thí sinh nào được gán cho đề thi riêng tư này."],
+    ["Private exams are only visible to assigned students and automatically get a join code (Access Code).", "Đề riêng tư chỉ hiển thị cho học sinh trong danh sách được giao và tự động sinh mã tham gia (Access Code)."],
+    ["Visibility changed to Private.", "Chế độ hiển thị đã cập nhật thành Riêng tư."],
+    ["Visibility changed to Public.", "Chế độ hiển thị đã cập nhật thành Công khai."],
     // AI question review
     ["Review AI questions", "Duyệt câu hỏi AI"],
     ["Nothing has been added yet. Check each answer key, edit or untick what you don't want, then add the rest.", "Chưa có câu hỏi nào được thêm. Hãy kiểm tra đáp án từng câu, sửa hoặc bỏ chọn những câu không cần, rồi thêm phần còn lại."],
@@ -304,6 +328,7 @@
       if ((m = norm.match(/^(\d+)\s+correct$/i))) return `${m[1]} câu đúng`;
       if ((m = norm.match(/^(\d+)\s+wrong$/i))) return `${m[1]} câu sai`;
       if ((m = norm.match(/^Pass mark\s+([\d.]+%)$/i))) return `Điểm đạt ${m[1]}`;
+      if ((m = norm.match(/^Private · (\d+) students?$/))) return `Riêng tư · ${m[1]} học sinh`;
       if ((m = norm.match(/^Question (\d+)$/))) return `Câu ${m[1]}`;
       if ((m = norm.match(/^Adding these creates version (\d+)\.$/))) return `Thêm các câu này sẽ tạo phiên bản ${m[1]}.`;
       if ((m = norm.match(/^(\d+) students? mid-attempt and (\d+) finished attempts? keep the version they started on\. Only attempts started afterwards get the new questions\.$/))) {
@@ -336,6 +361,7 @@
       if ((m = norm.match(/^(\d+)\s+câu đúng$/i))) return `${m[1]} correct`;
       if ((m = norm.match(/^(\d+)\s+câu sai$/i))) return `${m[1]} wrong`;
       if ((m = norm.match(/^Điểm đạt\s+([\d.]+%)$/i))) return `Pass mark ${m[1]}`;
+      if ((m = norm.match(/^Riêng tư · (\d+) học sinh$/))) return `Private · ${m[1]} student${m[1] === "1" ? "" : "s"}`;
       if ((m = norm.match(/^Câu (\d+)$/))) return `Question ${m[1]}`;
       if ((m = norm.match(/^Thêm các câu này sẽ tạo phiên bản (\d+)\.$/))) return `Adding these creates version ${m[1]}.`;
       if ((m = norm.match(/^(\d+) học sinh đang làm bài và (\d+) lượt đã hoàn thành vẫn giữ phiên bản lúc bắt đầu\. Chỉ các lượt bắt đầu sau đó mới nhận câu hỏi mới\.$/))) {

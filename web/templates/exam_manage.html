@@ -55,7 +55,7 @@
         {% if (exam.visibility or 'private') == 'private' %}
           Chỉ học sinh có email trong danh sách dưới đây hoặc nhập đúng mã tham gia mới được phép truy cập và làm bài.
         {% else %}
-          Đề thi đang ở chế độ <b>Công khai</b>. Tất cả tài khoản học sinh trong hệ thống đều có thể nhìn thấy và làm bài.
+          Đề thi đang ở chế độ Công khai. Tất cả tài khoản học sinh trong hệ thống đều có thể nhìn thấy và làm bài.
         {% endif %}
       </div>
     </div>
@@ -220,7 +220,7 @@
       </form>
       <div class="qc-divider">or</div>
       <h6 class="mb-2"><i class="bi bi-stars text-primary"></i> Generate questions with Azure AI</h6>
-      <p class="small text-secondary mb-2">Upload a document (<code>.pdf</code>, <code>.docx</code>, <code>.txt</code>) or paste your lesson notes and let Azure OpenAI draft multiple-choice questions. You review and edit them before anything is added.</p>
+      <p class="small text-secondary mb-2">Upload a document (.pdf, .docx, .txt) or paste your lesson notes and let Azure OpenAI draft multiple-choice questions. You review and edit them before anything is added.</p>
       <form method="post" action="{{ url_for('question_generate_ai', exam_id=exam.id) }}" enctype="multipart/form-data" id="ai-generate-form">
         <input type="hidden" name="csrf" value="{{ csrf_token() }}">
         <div class="mb-2">
