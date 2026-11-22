@@ -1617,6 +1617,10 @@ def register_routes(app):
     def forbidden(_):
         return render_template("error.html", code=403, message="You do not have permission to access this page."), 403
 
+    @app.errorhandler(413)
+    def too_large(_):
+        return render_template("error.html", code=413, message="The uploaded file is too large (max 10 MB)."), 413
+
     @app.errorhandler(404)
     def not_found(_):
         return render_template("error.html", code=404, message="Page not found."), 404

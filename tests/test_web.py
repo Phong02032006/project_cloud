@@ -1348,3 +1348,15 @@ def test_ai_client_has_bounded_timeout(app, monkeypatch):
         assert ai_generator.generate_mcqs_from_text("lesson") == []
     assert seen["timeout"] == ai_generator.OPENAI_TIMEOUT_SECONDS
     assert seen["max_retries"] == ai_generator.OPENAI_MAX_RETRIES
+
+
+def test_oversized_upload_rejected_before_parsing(app, monkeypatch):
+    import ai_generator
+
+    teacher, _, t, exam_id = _setup(app)
+    monkeypatch.setattr(ai_generator, "extract_text_from_upload", lambda f: pytest.fail("upload was parsed"))
+    big = io.BytesIO(b"x" * (app.config["MAX_CONTENT_LENGTH"] + 1))
+    r = teacher.post(f"/teacher/exams/{exam_id}/generate-ai",
+                     data={"csrf": t, "lesson_file": (big, "huge.txt")}, content_type="multipart/form-data")
+    assert r.status_code == 413
+    assert "too large" in r.get_data(as_text=True)
