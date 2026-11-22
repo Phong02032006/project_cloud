@@ -157,7 +157,8 @@ def _build_question(exam, text, raw_options, chosen, points=1.0):
     text = (text or "").strip()
     if not text or len(options) < 2 or not correct:
         raise ValueError("A question needs text, at least 2 options and at least 1 correct answer (on a filled-in option).")
-    return Question(exam=exam, text=text, options=options, correct=correct, points=max(0.0, points))
+    # exam_id, not exam=: the backref would attach a rejected question to exam.question_rows
+    return Question(exam_id=exam.id, text=text, options=options, correct=correct, points=max(0.0, points))
 
 
 def _parse_lettered(row):
@@ -587,6 +588,10 @@ def register_routes(app):
             assigned_list=assigned_list,
         )
 
+    def _render_ai_review(exam, drafts, errors=None):
+        return render_template("ai_review.html", exam=exam, drafts=drafts, errors=errors or {},
+                               impact=_edit_impact(exam), demo=not ai_generator.is_configured())
+
     @app.route("/teacher/exams/<int:exam_id>")
     @login_required("teacher")
     def exam_manage(exam_id):
@@ -786,29 +791,55 @@ def register_routes(app):
             flash("Failed to generate questions with AI. Please try again later.", "danger")
             return redirect(url_for("exam_manage", exam_id=exam.id))
 
-        added = []
-        for item in generated:
+        # Nothing is saved yet: the teacher reviews and edits the drafts, then confirms.
+        drafts = []
+        for item in generated[:ai_generator.MAX_QUESTIONS]:
             try:
                 options, correct = _parse_lettered(item)
                 q_text = str(item.get("question", "")).strip()
                 if not q_text or len(options) < 2:
                     continue
-                points = max(0.0, float(item.get("points") or 1))
-                added.append(Question(exam=exam, text=q_text, options=options, correct=correct, points=points))
+                drafts.append({"text": q_text, "options": (options + [""] * 4)[:4], "correct": correct,
+                               "points": max(0.0, float(item.get("points") or 1))})
             except (ValueError, TypeError):
                 continue
-
-        if added:
-            db.session.add_all(added)
-            db.session.flush()
-            exam.new_version([x.id for x in exam.questions] + [q.id for q in added])
-            db.session.commit()
-            if ai_generator.is_configured():
-                flash(f"Generated and added {len(added)} question(s) with Azure AI.", "success")
-            else:
-                flash(f"Azure OpenAI is not configured: added {len(added)} placeholder demo question(s).", "warning")
-        else:
+        if not drafts:
             flash("AI did not return any valid questions. Please try again with clearer lesson text.", "warning")
+            return redirect(url_for("exam_manage", exam_id=exam.id))
+        return _render_ai_review(exam, drafts)
+
+    @app.route("/teacher/exams/<int:exam_id>/generate-ai/confirm", methods=["POST"])
+    @login_required("teacher")
+    def question_generate_ai_confirm(exam_id):
+        exam = _own_exam(exam_id)
+        f = request.form
+        count = f.get("count", 0, type=int)
+        if not 0 < count <= ai_generator.MAX_QUESTIONS:
+            abort(400, "Invalid number of drafts.")
+        # The drafts round-trip through the browser, so every field is re-validated here.
+        keep = {int(i) for i in f.getlist("keep") if i.isdigit()}
+        drafts, errors, added = [], {}, []
+        for i in range(count):
+            draft = {"text": f.get(f"text_{i}", ""), "options": (f.getlist(f"options_{i}") + [""] * 4)[:4],
+                     "correct": [int(c) for c in f.getlist(f"correct_{i}") if c.isdigit()],
+                     "points": f.get(f"points_{i}", 1, type=float), "keep": i in keep}
+            drafts.append(draft)
+            if not draft["keep"]:
+                continue
+            try:
+                added.append(_build_question(exam, draft["text"], draft["options"], draft["correct"], draft["points"]))
+            except ValueError as exc:
+                errors[i] = str(exc)
+        if errors:
+            return _render_ai_review(exam, drafts, errors), 400
+        if not added:
+            flash("No questions were selected, so nothing was added.", "warning")
+            return redirect(url_for("exam_manage", exam_id=exam.id))
+        db.session.add_all(added)
+        db.session.flush()
+        exam.new_version([x.id for x in exam.questions] + [q.id for q in added])
+        db.session.commit()
+        flash(f"Added {len(added)} AI-generated question(s).", "success")
         return redirect(url_for("exam_manage", exam_id=exam.id))
 
     @app.route("/teacher/exams/<int:exam_id>/import", methods=["POST"])

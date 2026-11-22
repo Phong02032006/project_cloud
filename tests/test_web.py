@@ -1238,7 +1238,8 @@ def test_ai_generate_from_uploaded_documents(app):
         content_type="multipart/form-data",
         follow_redirects=True,
     )
-    assert "added 2 placeholder demo question(s)" in r_txt.get_data(as_text=True)
+    html = r_txt.get_data(as_text=True)
+    assert "placeholder demo questions" in html and 'name="count" value="2"' in html
 
     # 2. Generate from uploaded .docx file
     doc = Document()
@@ -1252,7 +1253,8 @@ def test_ai_generate_from_uploaded_documents(app):
         content_type="multipart/form-data",
         follow_redirects=True,
     )
-    assert "added 2 placeholder demo question(s)" in r_docx.get_data(as_text=True)
+    html = r_docx.get_data(as_text=True)
+    assert "placeholder demo questions" in html and 'name="count" value="2"' in html
 
     # 3. Reject unsupported extension cleanly
     bad_buf = io.BytesIO(b"binary")
@@ -1295,6 +1297,35 @@ def test_results_sorted_most_recent_first_and_ui_toggles_present(app):
 
 
 
+def _review_form(html):
+    """The AI review form's fields as a browser would submit them (only ticked checkboxes)."""
+    from html.parser import HTMLParser
+
+    fields = {}
+
+    class P(HTMLParser):
+        textarea = None
+
+        def handle_starttag(self, tag, attrs):
+            a = dict(attrs)
+            if tag == "textarea":
+                self.textarea = a["name"]
+                fields.setdefault(self.textarea, []).append("")
+            elif tag == "input" and "name" in a and (a.get("type") != "checkbox" or "checked" in a):
+                fields.setdefault(a["name"], []).append(a.get("value", ""))
+
+        def handle_data(self, data):
+            if self.textarea:
+                fields[self.textarea][-1] += data
+
+        def handle_endtag(self, tag):
+            if tag == "textarea":
+                self.textarea = None
+
+    P().feed(html[html.index('generate-ai/confirm"'):])
+    return fields
+
+
 def _questions(app, exam_id):
     with app.app_context():
         return [(q.text, q.options, q.correct) for q in db.session.get(Exam, exam_id).questions]
@@ -1309,9 +1340,11 @@ def test_ai_generate_reindexes_correct_past_blank_options(app, monkeypatch):
         {"question": "Pointing at a blank?", "A": "x", "B": "", "C": "y", "D": "z", "correct": "B"},
     ])
     app.config.update(AZURE_OPENAI_ENDPOINT="https://x.openai.azure.com", AZURE_OPENAI_API_KEY="k")
-    r = teacher.post(f"/teacher/exams/{exam_id}/generate-ai", data={"csrf": t, "lesson_text": "geo"},
-                     follow_redirects=True)
-    assert "Generated and added 1 question(s)" in r.get_data(as_text=True)
+    r = teacher.post(f"/teacher/exams/{exam_id}/generate-ai", data={"csrf": t, "lesson_text": "geo"})
+    form = _review_form(r.get_data(as_text=True))
+    assert form["count"] == ["1"] and form["options_0"] == ["Berlin", "Paris", "Rome", ""]
+    assert form["correct_0"] == ["1"]
+    teacher.post(f"/teacher/exams/{exam_id}/generate-ai/confirm", data=form)
     assert _questions(app, exam_id) == [("Capital of France?", ["Berlin", "Paris", "Rome"], [1])]
 
 
@@ -1381,3 +1414,4 @@ def test_ai_failures_hide_sdk_details(app, monkeypatch):
                         data={"csrf": t, "lesson_file": (io.BytesIO(b"%PDF"), "a.pdf")},
                         content_type="multipart/form-data", follow_redirects=True).get_data(as_text=True)
     assert "Could not read document" in html and "secret-res" not in html
+

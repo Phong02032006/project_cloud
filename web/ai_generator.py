@@ -8,6 +8,7 @@ from flask import current_app, has_app_context
 MAX_LESSON_CHARS = 12000
 MAX_DOC_BYTES = 10 * 1024 * 1024  # 10 MB
 ALLOWED_DOC_EXTENSIONS = {".txt", ".md", ".csv", ".pdf", ".docx"}
+MAX_QUESTIONS = 15
 # Runs inside the request thread; the SDK default (600s, 2 retries) would pin a worker for minutes.
 OPENAI_TIMEOUT_SECONDS = 60
 OPENAI_MAX_RETRIES = 1
@@ -160,7 +161,7 @@ def generate_mcqs_from_text(lesson_text: str, num_questions: int = 5) -> list[di
         num_questions = int(num_questions)
     except (TypeError, ValueError):
         num_questions = 5
-    num_questions = max(1, min(15, num_questions))
+    num_questions = max(1, min(MAX_QUESTIONS, num_questions))
 
     lesson_text = (lesson_text or "").strip()[:MAX_LESSON_CHARS]
     if not lesson_text:

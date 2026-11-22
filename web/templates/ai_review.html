@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+{% block title %}Review AI questions · {{ exam.title }}{% endblock %}
+{% block content %}
+<a href="{{ url_for('exam_manage', exam_id=exam.id) }}" class="qc-breadcrumb"><i class="bi bi-arrow-left"></i> {{ exam.title }}</a>
+<div class="qc-page-head mt-1">
+  <div>
+    <h2 class="d-flex align-items-center gap-2"><i class="bi bi-stars text-primary"></i> Review AI questions</h2>
+    <p class="text-secondary mb-0">Nothing has been added yet. Check each answer key, edit or untick what you don't want, then add the rest.</p>
+  </div>
+</div>
+
+{% if demo %}
+<div class="alert alert-warning d-flex gap-2 mb-4" id="ai-demo-banner">
+  <i class="bi bi-exclamation-triangle-fill"></i>
+  <div>Azure OpenAI is not configured, so these are <b>placeholder demo questions</b>, not real AI output.</div>
+</div>
+{% endif %}
+
+{% if exam.submissions %}
+<div class="alert alert-warning d-flex gap-2 mb-4">
+  <i class="bi bi-exclamation-triangle-fill"></i>
+  <div>Adding these creates <b>version {{ impact.next_version }}</b>.
+    {{ impact.in_progress|plural("student") }} mid-attempt and {{ impact.finished|plural("finished attempt") }}
+    keep the version they started on. Only attempts started afterwards get the new questions.</div>
+</div>
+{% endif %}
+
+{% if errors %}
+<div class="alert alert-danger mb-4"><i class="bi bi-x-circle"></i> {{ errors|length|plural("question") }} need fixing before anything can be added.</div>
+{% endif %}
+
+<form method="post" action="{{ url_for('question_generate_ai_confirm', exam_id=exam.id) }}"
+      {% if exam.submissions %}data-confirm="This creates version {{ impact.next_version }}; only new attempts get the added questions. Continue?"{% endif %}>
+  <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+  <input type="hidden" name="count" value="{{ drafts|length }}">
+  {% for d in drafts %}
+    {% set i = loop.index0 %}
+    <div class="qc-card p-4 mb-3 {{ 'border border-danger' if i in errors }}">
+      <div class="d-flex align-items-center justify-content-between mb-2">
+        <div class="form-check form-switch m-0">
+          <input class="form-check-input" type="checkbox" name="keep" value="{{ i }}" id="keep-{{ i }}" {{ 'checked' if d.get('keep', True) }}>
+          <label class="form-check-label fw-semibold" for="keep-{{ i }}">Question {{ loop.index }}</label>
+        </div>
+        <div class="input-group input-group-sm" style="max-width: 140px">
+          <span class="input-group-text">Points</span>
+          <input name="points_{{ i }}" type="number" step="0.25" min="0" value="{{ d.points|num }}" class="form-control">
+        </div>
+      </div>
+      {% if i in errors %}<div class="text-danger small mb-2"><i class="bi bi-x-circle"></i> {{ errors[i] }}</div>{% endif %}
+      <textarea name="text_{{ i }}" class="form-control mb-2" rows="2">{{ d.text }}</textarea>
+      {% for opt in d.options %}
+        <div class="qc-option-input">
+          <input class="form-check-input" type="checkbox" name="correct_{{ i }}" value="{{ loop.index0 }}" title="Mark as correct answer" {{ 'checked' if loop.index0 in d.correct }}>
+          <span class="letter">{{ letters[loop.index0] }}</span>
+          <input name="options_{{ i }}" class="form-control" value="{{ opt }}" placeholder="Option {{ letters[loop.index0] }}">
+        </div>
+      {% endfor %}
+    </div>
+  {% endfor %}
+  <div class="d-flex gap-2 justify-content-end mb-4">
+    <a href="{{ url_for('exam_manage', exam_id=exam.id) }}" class="btn btn-ghost">Discard all</a>
+    <button class="btn btn-primary"><i class="bi bi-plus-lg"></i> Add selected questions</button>
+  </div>
+</form>
+{% endblock %}

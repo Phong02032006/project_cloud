@@ -220,8 +220,8 @@
       </form>
       <div class="qc-divider">or</div>
       <h6 class="mb-2"><i class="bi bi-stars text-primary"></i> Generate questions with Azure AI</h6>
-      <p class="small text-secondary mb-2">Upload a document (<code>.pdf</code>, <code>.docx</code>, <code>.txt</code>) or paste your lesson notes and let Azure OpenAI generate multiple-choice questions automatically.</p>
-      <form method="post" action="{{ url_for('question_generate_ai', exam_id=exam.id) }}" enctype="multipart/form-data" class="js-edit" id="ai-generate-form">
+      <p class="small text-secondary mb-2">Upload a document (<code>.pdf</code>, <code>.docx</code>, <code>.txt</code>) or paste your lesson notes and let Azure OpenAI draft multiple-choice questions. You review and edit them before anything is added.</p>
+      <form method="post" action="{{ url_for('question_generate_ai', exam_id=exam.id) }}" enctype="multipart/form-data" id="ai-generate-form">
         <input type="hidden" name="csrf" value="{{ csrf_token() }}">
         <div class="mb-2">
           <label class="form-label small text-secondary mb-1"><i class="bi bi-file-earmark-text"></i> Upload document (optional, max 10MB)</label>
