@@ -316,7 +316,7 @@
       const hasFile = fileInput && fileInput.files && fileInput.files.length > 0;
       if (!text && !hasFile) {
         e.preventDefault();
-        alert("Please upload a document or paste lesson text first.");
+        alert(qcT("Please upload a document or paste lesson text first."));
         return;
       }
       const btn = document.getElementById("ai-generate-btn");
