@@ -1326,3 +1326,25 @@ def test_csv_import_reindexes_correct_past_blank_options(app):
     assert "line 4" in r.get_data(as_text=True)
     assert _questions(app, exam_id) == [("Capital of France?", ["Berlin", "Paris", "Rome"], [1]),
                                         ("Multi?", ["a", "b", "c"], [1, 2])]
+
+
+def test_ai_client_has_bounded_timeout(app, monkeypatch):
+    import json
+    import openai
+    import ai_generator
+
+    seen = {}
+
+    class FakeClient:
+        def __init__(self, **kw):
+            seen.update(kw)
+            msg = type("M", (), {"content": json.dumps({"questions": []})})
+            self.chat = type("C", (), {"completions": type("X", (), {
+                "create": staticmethod(lambda **_: type("R", (), {"choices": [type("Ch", (), {"message": msg})]}))})})
+
+    monkeypatch.setattr(openai, "AzureOpenAI", FakeClient)
+    app.config.update(AZURE_OPENAI_ENDPOINT="https://x.openai.azure.com", AZURE_OPENAI_API_KEY="k")
+    with app.app_context():
+        assert ai_generator.generate_mcqs_from_text("lesson") == []
+    assert seen["timeout"] == ai_generator.OPENAI_TIMEOUT_SECONDS
+    assert seen["max_retries"] == ai_generator.OPENAI_MAX_RETRIES
