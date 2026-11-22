@@ -148,12 +148,16 @@ def _own_exam(exam_id):
     return exam
 
 
-def _parse_correct(raw, n_options):
-    """'A' / 'a;c' / 'B,D' -> [0] / [0, 2] / [1, 3]."""
-    idx = sorted({LETTERS.index(c) for c in raw.upper() if c in LETTERS})
-    if not idx or max(idx) >= n_options:
+def _parse_lettered(row):
+    """{'A'..'D', 'correct': 'A' / 'a;c' / 'B,D'} -> (options, correct indices). Blank options are
+    dropped, so the correct letters are re-indexed past them; a letter pointing at a blank is rejected."""
+    kept = [k for k in "ABCD" if str(row.get(k) or "").strip()]
+    options = [str(row[k]).strip() for k in kept]
+    raw = str(row.get("correct") or "")
+    chosen = {c for c in raw.upper() if c in LETTERS}
+    if not chosen or not chosen <= set(kept):
         raise ValueError(f"invalid correct answer: '{raw}'")
-    return idx
+    return options, sorted(kept.index(c) for c in chosen)
 
 
 def _counting(subs):
@@ -775,11 +779,10 @@ def register_routes(app):
         added = []
         for item in generated:
             try:
-                options = [str(item.get(k, "")).strip() for k in "ABCD" if str(item.get(k, "")).strip()]
+                options, correct = _parse_lettered(item)
                 q_text = str(item.get("question", "")).strip()
                 if not q_text or len(options) < 2:
                     continue
-                correct = _parse_correct(str(item.get("correct", "A")), len(options))
                 points = max(0.0, float(item.get("points") or 1))
                 added.append(Question(exam=exam, text=q_text, options=options, correct=correct, points=points))
             except (ValueError, TypeError):
@@ -808,11 +811,10 @@ def register_routes(app):
         added, errors = [], []
         for line, row in enumerate(reader, start=2):
             try:
-                options = [row.get(k, "").strip() for k in "ABCD" if row.get(k, "").strip()]
-                if not row.get("question", "").strip() or len(options) < 2:
+                if not row.get("question", "").strip() or sum(1 for k in "ABCD" if (row.get(k) or "").strip()) < 2:
                     raise ValueError("missing question text or fewer than 2 options")
-                added.append(Question(exam=exam, text=row["question"].strip(), options=options,
-                                      correct=_parse_correct(row.get("correct", ""), len(options)),
+                options, correct = _parse_lettered(row)
+                added.append(Question(exam=exam, text=row["question"].strip(), options=options, correct=correct,
                                       points=float(row.get("points") or 1)))
             except (ValueError, KeyError) as exc:
                 errors.append(f"line {line}: {exc}")

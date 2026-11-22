@@ -1293,3 +1293,36 @@ def test_results_sorted_most_recent_first_and_ui_toggles_present(app):
 
 
 
+
+
+def _questions(app, exam_id):
+    with app.app_context():
+        return [(q.text, q.options, q.correct) for q in db.session.get(Exam, exam_id).questions]
+
+
+def test_ai_generate_reindexes_correct_past_blank_options(app, monkeypatch):
+    import ai_generator
+
+    teacher, _, t, exam_id = _setup(app, questions=())
+    monkeypatch.setattr(ai_generator, "generate_mcqs_from_text", lambda text, num_questions: [
+        {"question": "Capital of France?", "A": "Berlin", "B": "", "C": "Paris", "D": "Rome", "correct": "C"},
+        {"question": "Pointing at a blank?", "A": "x", "B": "", "C": "y", "D": "z", "correct": "B"},
+    ])
+    r = teacher.post(f"/teacher/exams/{exam_id}/generate-ai", data={"csrf": t, "lesson_text": "geo"},
+                     follow_redirects=True)
+    assert "Generated and added 1 question(s)" in r.get_data(as_text=True)
+    assert _questions(app, exam_id) == [("Capital of France?", ["Berlin", "Paris", "Rome"], [1])]
+
+
+def test_csv_import_reindexes_correct_past_blank_options(app):
+    teacher, _, t, exam_id = _setup(app, questions=())
+    csv_data = ("question,A,B,C,D,correct,points\n"
+                "Capital of France?,Berlin,,Paris,Rome,C,1\n"
+                "Multi?,a,,b,c,C;D,1\n"
+                "Pointing at a blank?,x,,y,z,B,1\n")
+    r = teacher.post(f"/teacher/exams/{exam_id}/import", data={
+        "csrf": t, "file": (io.BytesIO(csv_data.encode()), "q.csv")},
+        content_type="multipart/form-data", follow_redirects=True)
+    assert "line 4" in r.get_data(as_text=True)
+    assert _questions(app, exam_id) == [("Capital of France?", ["Berlin", "Paris", "Rome"], [1]),
+                                        ("Multi?", ["a", "b", "c"], [1, 2])]
