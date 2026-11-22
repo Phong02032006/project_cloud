@@ -31,6 +31,11 @@ def _cfg(key: str, default: str = "") -> str:
     return (os.environ.get(key) or default).strip()
 
 
+def is_configured() -> bool:
+    """False means generate_mcqs_from_text returns placeholder demo questions, not real AI output."""
+    return bool(_cfg("AZURE_OPENAI_ENDPOINT") and _cfg("AZURE_OPENAI_API_KEY"))
+
+
 def extract_text_from_upload(file_storage) -> str:
     """Extract plain text (up to MAX_LESSON_CHARS) from an uploaded .txt/.md/.csv/.pdf/.docx file."""
     if not file_storage or not getattr(file_storage, "filename", ""):
@@ -169,6 +174,8 @@ def generate_mcqs_from_text(lesson_text: str, num_questions: int = 5) -> list[di
     api_version = _cfg("AZURE_OPENAI_API_VERSION", "2024-10-21") or "2024-10-21"
 
     if not (endpoint and api_key):
+        if has_app_context():
+            current_app.logger.warning("Azure OpenAI is not configured; returning demo questions")
         return _demo_questions(lesson_text)
 
     from openai import AzureOpenAI

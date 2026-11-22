@@ -761,8 +761,12 @@ def register_routes(app):
         if lesson_file and getattr(lesson_file, "filename", ""):
             try:
                 doc_text = ai_generator.extract_text_from_upload(lesson_file)
-            except Exception as exc:
+            except ValueError as exc:  # our own validation messages, safe to show
                 flash(f"Could not read document: {exc}", "danger")
+                return redirect(url_for("exam_manage", exam_id=exam.id))
+            except Exception:
+                app.logger.exception("failed to parse lesson document")
+                flash("Could not read document. The file may be corrupted or password-protected.", "danger")
                 return redirect(url_for("exam_manage", exam_id=exam.id))
             lesson_text = f"{lesson_text}\n\n{doc_text}".strip() if lesson_text else doc_text
 
@@ -771,9 +775,10 @@ def register_routes(app):
             return redirect(url_for("exam_manage", exam_id=exam.id))
         try:
             generated = ai_generator.generate_mcqs_from_text(lesson_text, num_questions=num_questions)
-        except Exception as exc:
+        except Exception:
+            # SDK errors can carry the endpoint and deployment name, so they stay in the log.
             app.logger.exception("AI question generation failed")
-            flash(f"Failed to generate questions with AI: {exc}", "danger")
+            flash("Failed to generate questions with AI. Please try again later.", "danger")
             return redirect(url_for("exam_manage", exam_id=exam.id))
 
         added = []
@@ -793,7 +798,10 @@ def register_routes(app):
             db.session.flush()
             exam.new_version([x.id for x in exam.questions] + [q.id for q in added])
             db.session.commit()
-            flash(f"Generated and added {len(added)} question(s) with Azure AI.", "success")
+            if ai_generator.is_configured():
+                flash(f"Generated and added {len(added)} question(s) with Azure AI.", "success")
+            else:
+                flash(f"Azure OpenAI is not configured: added {len(added)} placeholder demo question(s).", "warning")
         else:
             flash("AI did not return any valid questions. Please try again with clearer lesson text.", "warning")
         return redirect(url_for("exam_manage", exam_id=exam.id))
