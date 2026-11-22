@@ -1238,7 +1238,8 @@ def test_ai_generate_from_uploaded_documents(app):
         content_type="multipart/form-data",
         follow_redirects=True,
     )
-    assert "added 2 placeholder demo question(s)" in r_txt.get_data(as_text=True)
+    html = r_txt.get_data(as_text=True)
+    assert "placeholder demo questions" in html and 'name="count" value="2"' in html
 
     # 2. Generate from uploaded .docx file
     doc = Document()
@@ -1252,7 +1253,8 @@ def test_ai_generate_from_uploaded_documents(app):
         content_type="multipart/form-data",
         follow_redirects=True,
     )
-    assert "added 2 placeholder demo question(s)" in r_docx.get_data(as_text=True)
+    html = r_docx.get_data(as_text=True)
+    assert "placeholder demo questions" in html and 'name="count" value="2"' in html
 
     # 3. Reject unsupported extension cleanly
     bad_buf = io.BytesIO(b"binary")
@@ -1295,6 +1297,35 @@ def test_results_sorted_most_recent_first_and_ui_toggles_present(app):
 
 
 
+def _review_form(html):
+    """The AI review form's fields as a browser would submit them (only ticked checkboxes)."""
+    from html.parser import HTMLParser
+
+    fields = {}
+
+    class P(HTMLParser):
+        textarea = None
+
+        def handle_starttag(self, tag, attrs):
+            a = dict(attrs)
+            if tag == "textarea":
+                self.textarea = a["name"]
+                fields.setdefault(self.textarea, []).append("")
+            elif tag == "input" and "name" in a and (a.get("type") != "checkbox" or "checked" in a):
+                fields.setdefault(a["name"], []).append(a.get("value", ""))
+
+        def handle_data(self, data):
+            if self.textarea:
+                fields[self.textarea][-1] += data
+
+        def handle_endtag(self, tag):
+            if tag == "textarea":
+                self.textarea = None
+
+    P().feed(html[html.index('generate-ai/confirm"'):])
+    return fields
+
+
 def _questions(app, exam_id):
     with app.app_context():
         return [(q.text, q.options, q.correct) for q in db.session.get(Exam, exam_id).questions]
@@ -1309,9 +1340,11 @@ def test_ai_generate_reindexes_correct_past_blank_options(app, monkeypatch):
         {"question": "Pointing at a blank?", "A": "x", "B": "", "C": "y", "D": "z", "correct": "B"},
     ])
     app.config.update(AZURE_OPENAI_ENDPOINT="https://x.openai.azure.com", AZURE_OPENAI_API_KEY="k")
-    r = teacher.post(f"/teacher/exams/{exam_id}/generate-ai", data={"csrf": t, "lesson_text": "geo"},
-                     follow_redirects=True)
-    assert "Generated and added 1 question(s)" in r.get_data(as_text=True)
+    r = teacher.post(f"/teacher/exams/{exam_id}/generate-ai", data={"csrf": t, "lesson_text": "geo"})
+    form = _review_form(r.get_data(as_text=True))
+    assert form["count"] == ["1"] and form["options_0"] == ["Berlin", "Paris", "Rome", ""]
+    assert form["correct_0"] == ["1"]
+    teacher.post(f"/teacher/exams/{exam_id}/generate-ai/confirm", data=form)
     assert _questions(app, exam_id) == [("Capital of France?", ["Berlin", "Paris", "Rome"], [1])]
 
 
@@ -1381,3 +1414,102 @@ def test_ai_failures_hide_sdk_details(app, monkeypatch):
                         data={"csrf": t, "lesson_file": (io.BytesIO(b"%PDF"), "a.pdf")},
                         content_type="multipart/form-data", follow_redirects=True).get_data(as_text=True)
     assert "Could not read document" in html and "secret-res" not in html
+
+
+def _ai_review(app, monkeypatch, items):
+    """Exam with one existing question, AI mocked to return items; returns (teacher, csrf, exam_id, review form)."""
+    import ai_generator
+
+    teacher, _, t, exam_id = _setup(app, questions=(("Existing?", ["a", "b"], ["0"]),))
+    monkeypatch.setattr(ai_generator, "generate_mcqs_from_text", lambda text, num_questions: items)
+    r = teacher.post(f"/teacher/exams/{exam_id}/generate-ai", data={"csrf": t, "lesson_text": "x"})
+    assert r.status_code == 200
+    return teacher, t, exam_id, _review_form(r.get_data(as_text=True))
+
+
+AI_ITEMS = [
+    {"question": "Q1?", "A": "a1", "B": "b1", "C": "c1", "D": "d1", "correct": "A", "points": 1},
+    {"question": "Q2?", "A": "a2", "B": "b2", "C": "c2", "D": "d2", "correct": "B;D", "points": 2},
+    {"question": "Q3?", "A": "a3", "B": "b3", "C": "", "D": "", "correct": "B", "points": 1},
+]
+
+
+def _state(app, exam_id):
+    with app.app_context():
+        e = db.session.get(Exam, exam_id)
+        return len(e.versions), len(e.question_rows)
+
+
+def test_ai_generate_saves_nothing_until_confirmed(app, monkeypatch):
+    teacher, t, exam_id, form = _ai_review(app, monkeypatch, AI_ITEMS)
+    assert _state(app, exam_id) == (1, 1)
+    assert form["count"] == ["3"] and form["keep"] == ["0", "1", "2"]
+    assert form["correct_1"] == ["1", "3"] and form["options_2"] == ["a3", "b3", "", ""]
+
+    # Discarding is just leaving the page: still nothing saved.
+    assert teacher.get(f"/teacher/exams/{exam_id}").status_code == 200
+    assert _state(app, exam_id) == (1, 1)
+
+
+def test_ai_confirm_adds_kept_and_edited_drafts_as_one_version(app, monkeypatch):
+    teacher, t, exam_id, form = _ai_review(app, monkeypatch, AI_ITEMS)
+    form["keep"] = ["0", "2"]                      # untick Q2
+    form["text_0"] = ["Q1 edited?"]
+    form["correct_0"] = ["2"]                      # teacher fixes the answer key
+    form["options_2"] = ["a3", "b3", "c3 added", ""]
+    form["points_2"] = ["3"]
+    r = teacher.post(f"/teacher/exams/{exam_id}/generate-ai/confirm", data=form, follow_redirects=True)
+    assert "Added 2 AI-generated question(s)" in r.get_data(as_text=True)
+    assert _state(app, exam_id) == (2, 3)
+    assert _questions(app, exam_id) == [("Existing?", ["a", "b"], [0]),
+                                        ("Q1 edited?", ["a1", "b1", "c1", "d1"], [2]),
+                                        ("Q3?", ["a3", "b3", "c3 added"], [1])]
+    with app.app_context():
+        assert db.session.get(Exam, exam_id).questions[-1].points == 3
+
+
+def test_ai_confirm_with_nothing_kept_adds_nothing(app, monkeypatch):
+    teacher, t, exam_id, form = _ai_review(app, monkeypatch, AI_ITEMS)
+    del form["keep"]
+    r = teacher.post(f"/teacher/exams/{exam_id}/generate-ai/confirm", data=form, follow_redirects=True)
+    assert "No questions were selected" in r.get_data(as_text=True)
+    assert _state(app, exam_id) == (1, 1)
+
+
+@pytest.mark.parametrize("tamper", [
+    {"correct_0": ["7"]},                           # correct index past the options
+    {"correct_1": ["2"], "options_1": ["a2", "", "", ""]},   # only one option left
+    {"text_0": ["   "]},
+])
+def test_ai_confirm_rejects_invalid_drafts_and_keeps_edits(app, monkeypatch, tamper):
+    teacher, t, exam_id, form = _ai_review(app, monkeypatch, AI_ITEMS)
+    form.update(tamper)
+    form["text_2"] = ["Q3 my edit?"]
+    r = teacher.post(f"/teacher/exams/{exam_id}/generate-ai/confirm", data=form)
+    html = r.get_data(as_text=True)
+    assert r.status_code == 400 and "1 question needs fixing" in html
+    assert "Q3 my edit?" in html                    # the teacher's other edits survive the re-render
+    assert _state(app, exam_id) == (1, 1)           # all or nothing
+
+
+def test_ai_confirm_rejects_bad_count_and_other_teachers(app, monkeypatch):
+    teacher, t, exam_id, form = _ai_review(app, monkeypatch, AI_ITEMS)
+    for count in ("0", "16", "x"):
+        assert teacher.post(f"/teacher/exams/{exam_id}/generate-ai/confirm",
+                            data={**form, "count": [count]}).status_code == 400
+
+    other = app.test_client()
+    login(other, "Other", "o@x.edu", "teacher")
+    r = other.post(f"/teacher/exams/{exam_id}/generate-ai/confirm", data={**form, "csrf": csrf(other, "/teacher")})
+    assert r.status_code == 403
+    assert _state(app, exam_id) == (1, 1)
+
+
+def test_ai_review_warns_about_new_version_and_demo_mode(app):
+    teacher, student, t, exam_id = _setup(app)
+    student.get(f"/student/exams/{exam_id}")           # an attempt exists now
+    r = teacher.post(f"/teacher/exams/{exam_id}/generate-ai", data={"csrf": t, "lesson_text": "Cloud computing is great."})
+    html = r.get_data(as_text=True)
+    nxt = _state(app, exam_id)[0] + 1
+    assert "placeholder demo questions" in html and f"<b>Adding these creates version {nxt}.</b>" in html
+    assert f'data-confirm="This creates version {nxt};' in html
