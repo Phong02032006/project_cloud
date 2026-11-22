@@ -148,6 +148,18 @@ def _own_exam(exam_id):
     return exam
 
 
+def _build_question(exam, text, raw_options, chosen, points=1.0):
+    """Validate one question as typed into an option-box form and return an unsaved Question.
+    Blank option boxes are dropped and the chosen box indices re-indexed past them."""
+    kept = [i for i, o in enumerate(raw_options) if str(o).strip()]
+    options = [str(raw_options[i]).strip() for i in kept]
+    correct = sorted(kept.index(i) for i in set(chosen) if i in kept)
+    text = (text or "").strip()
+    if not text or len(options) < 2 or not correct:
+        raise ValueError("A question needs text, at least 2 options and at least 1 correct answer (on a filled-in option).")
+    return Question(exam=exam, text=text, options=options, correct=correct, points=max(0.0, points))
+
+
 def _parse_lettered(row):
     """{'A'..'D', 'correct': 'A' / 'a;c' / 'B,D'} -> (options, correct indices). Blank options are
     dropped, so the correct letters are re-indexed past them; a letter pointing at a blank is rejected."""
@@ -718,21 +730,17 @@ def register_routes(app):
     @login_required("teacher")
     def question_add(exam_id):
         exam = _own_exam(exam_id)
-        raw = request.form.getlist("options")
-        kept = [i for i, o in enumerate(raw) if o.strip()]
-        options = [raw[i].strip() for i in kept]
-        # Re-index correct answers because blank option boxes are dropped.
-        chosen = {int(i) for i in request.form.getlist("correct") if i.isdigit()}
-        correct = sorted(kept.index(i) for i in chosen if i in kept)
-        text = request.form.get("text", "").strip()
-        if not text or len(options) < 2 or not correct:
-            flash("A question needs text, at least 2 options and at least 1 correct answer (on a filled-in option).", "danger")
+        try:
+            q = _build_question(exam, request.form.get("text"), request.form.getlist("options"),
+                                [int(i) for i in request.form.getlist("correct") if i.isdigit()],
+                                request.form.get("points", 1, type=float))
+        except ValueError as exc:
+            flash(str(exc), "danger")
         else:
-            image_url = None
             image_file = request.files.get("image")
             if image_file and image_file.filename:
                 try:
-                    image_url = storage_client.upload_question_image(image_file)
+                    q.image_url = storage_client.upload_question_image(image_file)
                 except ValueError as exc:
                     flash(str(exc), "danger")
                     return redirect(url_for("exam_manage", exam_id=exam.id))
@@ -740,9 +748,6 @@ def register_routes(app):
                     app.logger.exception("failed to upload question image")
                     flash("Could not upload the question image. Please check storage settings.", "danger")
                     return redirect(url_for("exam_manage", exam_id=exam.id))
-            q = Question(exam=exam, text=text, options=options, correct=correct,
-                         points=max(0.0, request.form.get("points", 1, type=float)),
-                         image_url=image_url)
             db.session.add(q)
             db.session.flush()  # need q.id before snapshotting
             exam.new_version([x.id for x in exam.questions] + [q.id])
