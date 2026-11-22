@@ -1487,7 +1487,7 @@ def test_ai_confirm_rejects_invalid_drafts_and_keeps_edits(app, monkeypatch, tam
     form["text_2"] = ["Q3 my edit?"]
     r = teacher.post(f"/teacher/exams/{exam_id}/generate-ai/confirm", data=form)
     html = r.get_data(as_text=True)
-    assert r.status_code == 400 and "need fixing" in html
+    assert r.status_code == 400 and "1 question needs fixing" in html
     assert "Q3 my edit?" in html                    # the teacher's other edits survive the re-render
     assert _state(app, exam_id) == (1, 1)           # all or nothing
 
@@ -1511,5 +1511,5 @@ def test_ai_review_warns_about_new_version_and_demo_mode(app):
     r = teacher.post(f"/teacher/exams/{exam_id}/generate-ai", data={"csrf": t, "lesson_text": "Cloud computing is great."})
     html = r.get_data(as_text=True)
     nxt = _state(app, exam_id)[0] + 1
-    assert "placeholder demo questions" in html and f"creates <b>version {nxt}</b>" in html
+    assert "placeholder demo questions" in html and f"<b>Adding these creates version {nxt}.</b>" in html
     assert f'data-confirm="This creates version {nxt};' in html

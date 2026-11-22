@@ -12,21 +12,20 @@
 {% if demo %}
 <div class="alert alert-warning d-flex gap-2 mb-4" id="ai-demo-banner">
   <i class="bi bi-exclamation-triangle-fill"></i>
-  <div>Azure OpenAI is not configured, so these are <b>placeholder demo questions</b>, not real AI output.</div>
+  <div>Azure OpenAI is not configured, so these are placeholder demo questions, not real AI output.</div>
 </div>
 {% endif %}
 
 {% if exam.submissions %}
 <div class="alert alert-warning d-flex gap-2 mb-4">
   <i class="bi bi-exclamation-triangle-fill"></i>
-  <div>Adding these creates <b>version {{ impact.next_version }}</b>.
-    {{ impact.in_progress|plural("student") }} mid-attempt and {{ impact.finished|plural("finished attempt") }}
-    keep the version they started on. Only attempts started afterwards get the new questions.</div>
+  <div><b>Adding these creates version {{ impact.next_version }}.</b>
+    <span>{{ impact.in_progress|plural("student") }} mid-attempt and {{ impact.finished|plural("finished attempt") }} keep the version they started on. Only attempts started afterwards get the new questions.</span></div>
 </div>
 {% endif %}
 
 {% if errors %}
-<div class="alert alert-danger mb-4"><i class="bi bi-x-circle"></i> {{ errors|length|plural("question") }} need fixing before anything can be added.</div>
+<div class="alert alert-danger mb-4"><i class="bi bi-x-circle"></i> {{ errors|length|plural("question") }} {{ 'needs' if errors|length == 1 else 'need' }} fixing before anything can be added.</div>
 {% endif %}
 
 <form method="post" action="{{ url_for('question_generate_ai_confirm', exam_id=exam.id) }}"
