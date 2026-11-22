@@ -8,6 +8,9 @@ from flask import current_app, has_app_context
 MAX_LESSON_CHARS = 12000
 MAX_DOC_BYTES = 10 * 1024 * 1024  # 10 MB
 ALLOWED_DOC_EXTENSIONS = {".txt", ".md", ".csv", ".pdf", ".docx"}
+# Runs inside the request thread; the SDK default (600s, 2 retries) would pin a worker for minutes.
+OPENAI_TIMEOUT_SECONDS = 60
+OPENAI_MAX_RETRIES = 1
 
 SYSTEM_PROMPT = """You are an expert educational assessment designer for QuizCloud.
 Generate multiple-choice questions (MCQs) strictly based on the provided lesson text.
@@ -26,6 +29,11 @@ def _cfg(key: str, default: str = "") -> str:
     if has_app_context():
         return (current_app.config.get(key) or default).strip()
     return (os.environ.get(key) or default).strip()
+
+
+def is_configured() -> bool:
+    """False means generate_mcqs_from_text returns placeholder demo questions, not real AI output."""
+    return bool(_cfg("AZURE_OPENAI_ENDPOINT") and _cfg("AZURE_OPENAI_API_KEY"))
 
 
 def extract_text_from_upload(file_storage) -> str:
@@ -166,6 +174,8 @@ def generate_mcqs_from_text(lesson_text: str, num_questions: int = 5) -> list[di
     api_version = _cfg("AZURE_OPENAI_API_VERSION", "2024-10-21") or "2024-10-21"
 
     if not (endpoint and api_key):
+        if has_app_context():
+            current_app.logger.warning("Azure OpenAI is not configured; returning demo questions")
         return _demo_questions(lesson_text)
 
     from openai import AzureOpenAI
@@ -174,6 +184,8 @@ def generate_mcqs_from_text(lesson_text: str, num_questions: int = 5) -> list[di
         azure_endpoint=endpoint,
         api_key=api_key,
         api_version=api_version,
+        timeout=OPENAI_TIMEOUT_SECONDS,
+        max_retries=OPENAI_MAX_RETRIES,
     )
     user_prompt = (
         f"Generate exactly {num_questions} multiple-choice question(s) from the following lesson text:\n\n"

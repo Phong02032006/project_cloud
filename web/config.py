@@ -16,6 +16,8 @@ def _fix_database_url(url):
 
 class Config:
     SECRET_KEY = os.environ.get("SECRET_KEY", "dev-secret-change-me")
+    # Reject oversized requests before they are buffered; the largest upload is a 10 MB lesson document.
+    MAX_CONTENT_LENGTH = 12 * 1024 * 1024
     # Local: SQLite. Azure: mssql+pymssql://USER:PASSWORD@SERVER.database.windows.net:1433/DBNAME
     SQLALCHEMY_DATABASE_URI = _fix_database_url(os.environ.get("DATABASE_URL", "sqlite:///quiz.db"))
     # pool_pre_ping matters for Azure SQL serverless (free offer), which auto-pauses and drops idle connections.

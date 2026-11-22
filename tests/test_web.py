@@ -1238,7 +1238,7 @@ def test_ai_generate_from_uploaded_documents(app):
         content_type="multipart/form-data",
         follow_redirects=True,
     )
-    assert "Generated and added 2 question(s)" in r_txt.get_data(as_text=True)
+    assert "added 2 placeholder demo question(s)" in r_txt.get_data(as_text=True)
 
     # 2. Generate from uploaded .docx file
     doc = Document()
@@ -1252,7 +1252,7 @@ def test_ai_generate_from_uploaded_documents(app):
         content_type="multipart/form-data",
         follow_redirects=True,
     )
-    assert "Generated and added 2 question(s)" in r_docx.get_data(as_text=True)
+    assert "added 2 placeholder demo question(s)" in r_docx.get_data(as_text=True)
 
     # 3. Reject unsupported extension cleanly
     bad_buf = io.BytesIO(b"binary")
@@ -1293,3 +1293,91 @@ def test_results_sorted_most_recent_first_and_ui_toggles_present(app):
 
 
 
+
+
+def _questions(app, exam_id):
+    with app.app_context():
+        return [(q.text, q.options, q.correct) for q in db.session.get(Exam, exam_id).questions]
+
+
+def test_ai_generate_reindexes_correct_past_blank_options(app, monkeypatch):
+    import ai_generator
+
+    teacher, _, t, exam_id = _setup(app, questions=())
+    monkeypatch.setattr(ai_generator, "generate_mcqs_from_text", lambda text, num_questions: [
+        {"question": "Capital of France?", "A": "Berlin", "B": "", "C": "Paris", "D": "Rome", "correct": "C"},
+        {"question": "Pointing at a blank?", "A": "x", "B": "", "C": "y", "D": "z", "correct": "B"},
+    ])
+    app.config.update(AZURE_OPENAI_ENDPOINT="https://x.openai.azure.com", AZURE_OPENAI_API_KEY="k")
+    r = teacher.post(f"/teacher/exams/{exam_id}/generate-ai", data={"csrf": t, "lesson_text": "geo"},
+                     follow_redirects=True)
+    assert "Generated and added 1 question(s)" in r.get_data(as_text=True)
+    assert _questions(app, exam_id) == [("Capital of France?", ["Berlin", "Paris", "Rome"], [1])]
+
+
+def test_csv_import_reindexes_correct_past_blank_options(app):
+    teacher, _, t, exam_id = _setup(app, questions=())
+    csv_data = ("question,A,B,C,D,correct,points\n"
+                "Capital of France?,Berlin,,Paris,Rome,C,1\n"
+                "Multi?,a,,b,c,C;D,1\n"
+                "Pointing at a blank?,x,,y,z,B,1\n")
+    r = teacher.post(f"/teacher/exams/{exam_id}/import", data={
+        "csrf": t, "file": (io.BytesIO(csv_data.encode()), "q.csv")},
+        content_type="multipart/form-data", follow_redirects=True)
+    assert "line 4" in r.get_data(as_text=True)
+    assert _questions(app, exam_id) == [("Capital of France?", ["Berlin", "Paris", "Rome"], [1]),
+                                        ("Multi?", ["a", "b", "c"], [1, 2])]
+
+
+def test_ai_client_has_bounded_timeout(app, monkeypatch):
+    import json
+    import openai
+    import ai_generator
+
+    seen = {}
+
+    class FakeClient:
+        def __init__(self, **kw):
+            seen.update(kw)
+            msg = type("M", (), {"content": json.dumps({"questions": []})})
+            self.chat = type("C", (), {"completions": type("X", (), {
+                "create": staticmethod(lambda **_: type("R", (), {"choices": [type("Ch", (), {"message": msg})]}))})})
+
+    monkeypatch.setattr(openai, "AzureOpenAI", FakeClient)
+    app.config.update(AZURE_OPENAI_ENDPOINT="https://x.openai.azure.com", AZURE_OPENAI_API_KEY="k")
+    with app.app_context():
+        assert ai_generator.generate_mcqs_from_text("lesson") == []
+    assert seen["timeout"] == ai_generator.OPENAI_TIMEOUT_SECONDS
+    assert seen["max_retries"] == ai_generator.OPENAI_MAX_RETRIES
+
+
+def test_oversized_upload_rejected_before_parsing(app, monkeypatch):
+    import ai_generator
+
+    teacher, _, t, exam_id = _setup(app)
+    monkeypatch.setattr(ai_generator, "extract_text_from_upload", lambda f: pytest.fail("upload was parsed"))
+    big = io.BytesIO(b"x" * (app.config["MAX_CONTENT_LENGTH"] + 1))
+    r = teacher.post(f"/teacher/exams/{exam_id}/generate-ai",
+                     data={"csrf": t, "lesson_file": (big, "huge.txt")}, content_type="multipart/form-data")
+    assert r.status_code == 413
+    assert "too large" in r.get_data(as_text=True)
+
+
+def test_ai_failures_hide_sdk_details(app, monkeypatch):
+    import ai_generator
+
+    teacher, _, t, exam_id = _setup(app)
+
+    def boom(*_, **__):
+        raise RuntimeError("401 at https://secret-res.openai.azure.com deployment=prod-gpt")
+
+    monkeypatch.setattr(ai_generator, "generate_mcqs_from_text", boom)
+    html = teacher.post(f"/teacher/exams/{exam_id}/generate-ai", data={"csrf": t, "lesson_text": "x"},
+                        follow_redirects=True).get_data(as_text=True)
+    assert "Failed to generate questions with AI" in html and "secret-res" not in html
+
+    monkeypatch.setattr(ai_generator, "extract_text_from_upload", boom)
+    html = teacher.post(f"/teacher/exams/{exam_id}/generate-ai",
+                        data={"csrf": t, "lesson_file": (io.BytesIO(b"%PDF"), "a.pdf")},
+                        content_type="multipart/form-data", follow_redirects=True).get_data(as_text=True)
+    assert "Could not read document" in html and "secret-res" not in html

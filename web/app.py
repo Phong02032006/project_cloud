@@ -148,12 +148,16 @@ def _own_exam(exam_id):
     return exam
 
 
-def _parse_correct(raw, n_options):
-    """'A' / 'a;c' / 'B,D' -> [0] / [0, 2] / [1, 3]."""
-    idx = sorted({LETTERS.index(c) for c in raw.upper() if c in LETTERS})
-    if not idx or max(idx) >= n_options:
+def _parse_lettered(row):
+    """{'A'..'D', 'correct': 'A' / 'a;c' / 'B,D'} -> (options, correct indices). Blank options are
+    dropped, so the correct letters are re-indexed past them; a letter pointing at a blank is rejected."""
+    kept = [k for k in "ABCD" if str(row.get(k) or "").strip()]
+    options = [str(row[k]).strip() for k in kept]
+    raw = str(row.get("correct") or "")
+    chosen = {c for c in raw.upper() if c in LETTERS}
+    if not chosen or not chosen <= set(kept):
         raise ValueError(f"invalid correct answer: '{raw}'")
-    return idx
+    return options, sorted(kept.index(c) for c in chosen)
 
 
 def _counting(subs):
@@ -757,8 +761,12 @@ def register_routes(app):
         if lesson_file and getattr(lesson_file, "filename", ""):
             try:
                 doc_text = ai_generator.extract_text_from_upload(lesson_file)
-            except Exception as exc:
+            except ValueError as exc:  # our own validation messages, safe to show
                 flash(f"Could not read document: {exc}", "danger")
+                return redirect(url_for("exam_manage", exam_id=exam.id))
+            except Exception:
+                app.logger.exception("failed to parse lesson document")
+                flash("Could not read document. The file may be corrupted or password-protected.", "danger")
                 return redirect(url_for("exam_manage", exam_id=exam.id))
             lesson_text = f"{lesson_text}\n\n{doc_text}".strip() if lesson_text else doc_text
 
@@ -767,19 +775,19 @@ def register_routes(app):
             return redirect(url_for("exam_manage", exam_id=exam.id))
         try:
             generated = ai_generator.generate_mcqs_from_text(lesson_text, num_questions=num_questions)
-        except Exception as exc:
+        except Exception:
+            # SDK errors can carry the endpoint and deployment name, so they stay in the log.
             app.logger.exception("AI question generation failed")
-            flash(f"Failed to generate questions with AI: {exc}", "danger")
+            flash("Failed to generate questions with AI. Please try again later.", "danger")
             return redirect(url_for("exam_manage", exam_id=exam.id))
 
         added = []
         for item in generated:
             try:
-                options = [str(item.get(k, "")).strip() for k in "ABCD" if str(item.get(k, "")).strip()]
+                options, correct = _parse_lettered(item)
                 q_text = str(item.get("question", "")).strip()
                 if not q_text or len(options) < 2:
                     continue
-                correct = _parse_correct(str(item.get("correct", "A")), len(options))
                 points = max(0.0, float(item.get("points") or 1))
                 added.append(Question(exam=exam, text=q_text, options=options, correct=correct, points=points))
             except (ValueError, TypeError):
@@ -790,7 +798,10 @@ def register_routes(app):
             db.session.flush()
             exam.new_version([x.id for x in exam.questions] + [q.id for q in added])
             db.session.commit()
-            flash(f"Generated and added {len(added)} question(s) with Azure AI.", "success")
+            if ai_generator.is_configured():
+                flash(f"Generated and added {len(added)} question(s) with Azure AI.", "success")
+            else:
+                flash(f"Azure OpenAI is not configured: added {len(added)} placeholder demo question(s).", "warning")
         else:
             flash("AI did not return any valid questions. Please try again with clearer lesson text.", "warning")
         return redirect(url_for("exam_manage", exam_id=exam.id))
@@ -808,11 +819,10 @@ def register_routes(app):
         added, errors = [], []
         for line, row in enumerate(reader, start=2):
             try:
-                options = [row.get(k, "").strip() for k in "ABCD" if row.get(k, "").strip()]
-                if not row.get("question", "").strip() or len(options) < 2:
+                if not row.get("question", "").strip() or sum(1 for k in "ABCD" if (row.get(k) or "").strip()) < 2:
                     raise ValueError("missing question text or fewer than 2 options")
-                added.append(Question(exam=exam, text=row["question"].strip(), options=options,
-                                      correct=_parse_correct(row.get("correct", ""), len(options)),
+                options, correct = _parse_lettered(row)
+                added.append(Question(exam=exam, text=row["question"].strip(), options=options, correct=correct,
                                       points=float(row.get("points") or 1)))
             except (ValueError, KeyError) as exc:
                 errors.append(f"line {line}: {exc}")
@@ -1614,6 +1624,10 @@ def register_routes(app):
     @app.errorhandler(403)
     def forbidden(_):
         return render_template("error.html", code=403, message="You do not have permission to access this page."), 403
+
+    @app.errorhandler(413)
+    def too_large(_):
+        return render_template("error.html", code=413, message="The uploaded file is too large (max 10 MB)."), 413
 
     @app.errorhandler(404)
     def not_found(_):
